@@ -1,3 +1,5 @@
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+
 // Item 83 Fix: Exponential Backoff Retry Helper
 export const retryWithBackoff = async (fn, maxRetries = 2, delayMs = 1000) => {
   let lastErr;
