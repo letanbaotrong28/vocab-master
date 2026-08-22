@@ -13,51 +13,82 @@ const getUserSetId = (userId, rawId) => {
   return String(rawId).startsWith(`${userId}_`) ? String(rawId) : `${userId}_${rawId}`;
 };
 
-// Item 70: Fetch all sets with relational joined cards and atomic progress stats
+// Item 31-34 Fix: Robust backend input validator & length boundaries
+const validateSetInput = (title, description, cards) => {
+  if (typeof title !== 'string' || !title.trim()) {
+    return 'Tên bộ từ vựng phải là chuỗi ký tự hợp lệ.';
+  }
+  if (title.trim().length > 250) {
+    return 'Tên bộ từ vựng không được vượt quá 250 ký tự.';
+  }
+  if (description && (typeof description !== 'string' || description.length > 1000)) {
+    return 'Mô tả bộ từ vựng không được vượt quá 1000 ký tự.';
+  }
+  if (!Array.isArray(cards) || cards.length === 0) {
+    return 'Bộ từ vựng cần có ít nhất 1 thẻ từ hợp lệ.';
+  }
+  if (cards.length > 1000) {
+    return 'Số lượng thẻ tối đa trong một bộ từ là 1000 thẻ.';
+  }
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    if (!c || typeof c !== 'object') return `Thẻ số ${i + 1} không hợp lệ.`;
+    if (typeof c.english !== 'string' || !c.english.trim()) return `Thẻ số ${i + 1} thiếu từ tiếng Anh.`;
+    if (typeof c.vietnamese !== 'string' || !c.vietnamese.trim()) return `Thẻ số ${i + 1} thiếu nghĩa tiếng Việt.`;
+    if (c.english.trim().length > 500 || c.vietnamese.trim().length > 500) return `Từ vựng ở thẻ số ${i + 1} vượt quá 500 ký tự.`;
+    if (c.example && (typeof c.example !== 'string' || c.example.length > 1000)) return `Ví dụ ở thẻ số ${i + 1} vượt quá 1000 ký tự.`;
+  }
+  return null;
+};
+
+// Item 44 & 45 Fix: Single 3-way JOIN query eliminates N+1 queries & explicit column selection
 router.get('/', async (req, res) => {
   try {
     const userId = req.user.id;
-    const setRows = await query(
-      'SELECT * FROM vocab_sets WHERE user_id = ? ORDER BY updated_at DESC',
+
+    const rows = await query(
+      `SELECT s.id as set_id, s.title, s.description, s.streak_count, s.last_streak_date, s.created_at, s.updated_at,
+              c.id as card_id, c.english, c.vietnamese, c.example, c.example_translation as example_translation, c.position,
+              COALESCE(cp.correct, 0) as correct, COALESCE(cp.wrong, 0) as wrong
+       FROM vocab_sets s
+       LEFT JOIN cards c ON c.set_id = s.id
+       LEFT JOIN card_progress cp ON cp.user_id = s.user_id AND cp.set_id = s.id AND cp.card_id = c.id
+       WHERE s.user_id = ?
+       ORDER BY s.updated_at DESC, c.position ASC`,
       [userId]
     );
 
-    const sets = [];
-    for (const setRow of setRows) {
-      const cardRows = await query(
-        `SELECT c.id, c.english, c.vietnamese, c.example, c.example_translation as exampleTranslation,
-                COALESCE(cp.correct, 0) as correct, COALESCE(cp.wrong, 0) as wrong
-         FROM cards c
-         LEFT JOIN card_progress cp ON cp.card_id = c.id AND cp.user_id = ?
-         WHERE c.set_id = ?
-         ORDER BY c.position ASC`,
-        [userId, setRow.id]
-      );
+    const setsMap = new Map();
+    for (const r of rows) {
+      if (!setsMap.has(r.set_id)) {
+        setsMap.set(r.set_id, {
+          id: r.set_id,
+          title: r.title,
+          description: r.description || '',
+          cards: [],
+          streak_count: r.streak_count || 0,
+          last_streak_date: r.last_streak_date || null,
+          createdAt: typeof r.created_at === 'number' ? r.created_at : parseInt(r.created_at, 10) || Date.now(),
+          updatedAt: typeof r.updated_at === 'number' ? r.updated_at : parseInt(r.updated_at, 10) || Date.now()
+        });
+      }
 
-      const cards = cardRows.map(c => ({
-        id: c.id,
-        english: c.english,
-        vietnamese: c.vietnamese,
-        example: c.example || '',
-        exampleTranslation: c.exampleTranslation || '',
-        stats: {
-          correct: Math.max(0, parseInt(c.correct) || 0),
-          wrong: Math.max(0, parseInt(c.wrong) || 0)
-        }
-      }));
-
-      sets.push({
-        id: setRow.id,
-        title: setRow.title,
-        description: setRow.description || '',
-        cards,
-        streak_count: setRow.streak_count || 0,
-        last_streak_date: setRow.last_streak_date || null,
-        createdAt: setRow.created_at || Date.now(),
-        updatedAt: setRow.updated_at || Date.now()
-      });
+      if (r.card_id) {
+        setsMap.get(r.set_id).cards.push({
+          id: r.card_id,
+          english: r.english,
+          vietnamese: r.vietnamese,
+          example: r.example || '',
+          exampleTranslation: r.example_translation || '',
+          stats: {
+            correct: Math.max(0, parseInt(r.correct) || 0),
+            wrong: Math.max(0, parseInt(r.wrong) || 0)
+          }
+        });
+      }
     }
 
+    const sets = Array.from(setsMap.values());
     return res.json({ sets });
   } catch (err) {
     console.error('Get sets error:', err);
@@ -65,19 +96,20 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Item 70, 74, 75 & P0 Fix (15, 16, 7, 8, 9): Save or Update single set with withTransaction, scoped cards & orphan cleanup
+// Item 31-36, 70, 74, 75: Save or Update single set with strict validation, scoped cards & orphan cleanup
 router.post('/', async (req, res) => {
   try {
     const userId = req.user.id;
     const { id, title, description, cards, createdAt } = req.body;
 
-    if (!title || !Array.isArray(cards)) {
-      return res.status(400).json({ error: 'Dữ liệu bộ từ vựng không hợp lệ.' });
+    const validationErr = validateSetInput(title, description, cards);
+    if (validationErr) {
+      return res.status(400).json({ error: validationErr });
     }
 
     const setObjId = getUserSetId(userId, id);
     const now = Date.now();
-    const createdTime = typeof createdAt === 'number' ? createdAt : now;
+    const createdTime = typeof createdAt === 'number' ? createdAt : parseInt(createdAt, 10) || now;
 
     await withTransaction(async (tx) => {
       const existing = await tx.getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setObjId, userId]);
@@ -85,17 +117,16 @@ router.post('/', async (req, res) => {
       if (existing) {
         await tx.run(
           `UPDATE vocab_sets SET title = ?, description = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-          [title, description || '', now, setObjId, userId]
+          [title.trim(), (description || '').trim(), now, setObjId, userId]
         );
       } else {
         await tx.run(
           `INSERT INTO vocab_sets (id, user_id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-          [setObjId, userId, title, description || '', createdTime, now]
+          [setObjId, userId, title.trim(), (description || '').trim(), createdTime, now]
         );
       }
 
-      // Save cards relationally with set-scoped ID (Item 7 & 8 Fix)
-      const validCards = cards.filter(c => c.english && c.vietnamese);
+      const validCards = cards.filter(c => c && typeof c.english === 'string' && typeof c.vietnamese === 'string' && c.english.trim() && c.vietnamese.trim());
       const cardIdSet = new Set();
 
       for (let i = 0; i < validCards.length; i++) {
@@ -114,7 +145,7 @@ router.post('/', async (req, res) => {
              example_translation = excluded.example_translation,
              position = excluded.position
            WHERE cards.set_id = excluded.set_id`,
-          [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
+          [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), (c.example || '').trim(), (c.exampleTranslation || '').trim(), i]
         );
 
         if (c.stats) {
@@ -124,9 +155,9 @@ router.post('/', async (req, res) => {
             await tx.run(
               `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, card_id) DO UPDATE SET
-                  correct = CASE WHEN excluded.correct > card_progress.correct THEN excluded.correct ELSE card_progress.correct END,
-                  wrong = CASE WHEN excluded.wrong > card_progress.wrong THEN excluded.wrong ELSE card_progress.wrong END,
+               ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
+                 correct = CASE WHEN excluded.correct > card_progress.correct THEN excluded.correct ELSE card_progress.correct END,
+                 wrong = CASE WHEN excluded.wrong > card_progress.wrong THEN excluded.wrong ELSE card_progress.wrong END,
                  updated_at = excluded.updated_at`,
               [userId, setObjId, cardId, correctCount, wrongCount, now]
             );
@@ -134,7 +165,6 @@ router.post('/', async (req, res) => {
         }
       }
 
-      // Delete cards that were removed in editor & orphan card_progress (Item 9 Fix)
       if (cardIdSet.size > 0) {
         const placeholders = Array.from(cardIdSet).map(() => '?').join(',');
         await tx.run(
@@ -158,7 +188,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Item 72 & P0 Fix (15, 16): Sync/batch insert local sets with withTransaction & scoped cards
+// Item 33, 37, 72: Sync/batch insert local sets with validation, withTransaction & scoped cards
 router.post('/sync-batch', async (req, res) => {
   try {
     const userId = req.user.id;
@@ -170,29 +200,34 @@ router.post('/sync-batch', async (req, res) => {
 
     await withTransaction(async (tx) => {
       for (const setItem of sets) {
+        if (!setItem || typeof setItem !== 'object' || typeof setItem.title !== 'string' || !setItem.title.trim()) continue;
+
         const setObjId = getUserSetId(userId, setItem.id);
-        const createdTime = typeof setItem.createdAt === 'number' ? setItem.createdAt : Date.now();
+        const createdTime = typeof setItem.createdAt === 'number' ? setItem.createdAt : parseInt(setItem.createdAt, 10) || Date.now();
         const now = Date.now();
 
         const existing = await tx.getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setObjId, userId]);
         if (existing) {
           await tx.run(
             `UPDATE vocab_sets SET title = ?, description = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-            [setItem.title, setItem.description || '', now, setObjId, userId]
+            [setItem.title.trim(), (setItem.description || '').trim(), now, setObjId, userId]
           );
         } else {
           await tx.run(
             `INSERT INTO vocab_sets (id, user_id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-            [setObjId, userId, setItem.title, setItem.description || '', createdTime, now]
+            [setObjId, userId, setItem.title.trim(), (setItem.description || '').trim(), createdTime, now]
           );
         }
 
         const rawCards = Array.isArray(setItem.cards) ? setItem.cards : [];
+        const syncedCardIds = new Set();
+
         for (let i = 0; i < rawCards.length; i++) {
           const c = rawCards[i];
-          if (!c.english || !c.vietnamese) continue;
+          if (!c || typeof c.english !== 'string' || typeof c.vietnamese !== 'string' || !c.english.trim() || !c.vietnamese.trim()) continue;
           const rawCardId = String(c.id || `card_${i}`).replace(/[\/\?#]/g, '_').trim();
           const cardId = rawCardId.startsWith(`${setObjId}_`) ? rawCardId : `${setObjId}_${rawCardId}`;
+          syncedCardIds.add(cardId);
 
           await tx.run(
             `INSERT INTO cards (id, set_id, english, vietnamese, example, example_translation, position)
@@ -204,7 +239,7 @@ router.post('/sync-batch', async (req, res) => {
                example_translation = excluded.example_translation,
                position = excluded.position
              WHERE cards.set_id = excluded.set_id`,
-            [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
+            [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), (c.example || '').trim(), (c.exampleTranslation || '').trim(), i]
           );
 
           if (c.stats) {
@@ -214,7 +249,7 @@ router.post('/sync-batch', async (req, res) => {
               await tx.run(
                 `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(user_id, card_id) DO UPDATE SET
+                 ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
                    correct = CASE WHEN excluded.correct > card_progress.correct THEN excluded.correct ELSE card_progress.correct END,
                    wrong = CASE WHEN excluded.wrong > card_progress.wrong THEN excluded.wrong ELSE card_progress.wrong END,
                    updated_at = excluded.updated_at`,
@@ -223,61 +258,83 @@ router.post('/sync-batch', async (req, res) => {
             }
           }
         }
+
+        // Item 37 Fix: Delete local deleted cards in batch sync
+        if (syncedCardIds.size > 0) {
+          const placeholders = Array.from(syncedCardIds).map(() => '?').join(',');
+          await tx.run(
+            `DELETE FROM card_progress WHERE set_id = ? AND card_id NOT IN (${placeholders})`,
+            [setObjId, ...Array.from(syncedCardIds)]
+          );
+          await tx.run(
+            `DELETE FROM cards WHERE set_id = ? AND id NOT IN (${placeholders})`,
+            [setObjId, ...Array.from(syncedCardIds)]
+          );
+        }
       }
     });
 
     // Fetch fresh relational sets list
-    const setRows = await query('SELECT * FROM vocab_sets WHERE user_id = ? ORDER BY updated_at DESC', [userId]);
-    const updatedSetsList = [];
+    const rows = await query(
+      `SELECT s.id as set_id, s.title, s.description, s.streak_count, s.last_streak_date, s.created_at, s.updated_at,
+              c.id as card_id, c.english, c.vietnamese, c.example, c.example_translation as example_translation, c.position,
+              COALESCE(cp.correct, 0) as correct, COALESCE(cp.wrong, 0) as wrong
+       FROM vocab_sets s
+       LEFT JOIN cards c ON c.set_id = s.id
+       LEFT JOIN card_progress cp ON cp.user_id = s.user_id AND cp.set_id = s.id AND cp.card_id = c.id
+       WHERE s.user_id = ?
+       ORDER BY s.updated_at DESC, c.position ASC`,
+      [userId]
+    );
 
-    for (const setRow of setRows) {
-      const cardRows = await query(
-        `SELECT c.id, c.english, c.vietnamese, c.example, c.example_translation as exampleTranslation,
-                COALESCE(cp.correct, 0) as correct, COALESCE(cp.wrong, 0) as wrong
-         FROM cards c
-         LEFT JOIN card_progress cp ON cp.card_id = c.id AND cp.user_id = ?
-         WHERE c.set_id = ?
-         ORDER BY c.position ASC`,
-        [userId, setRow.id]
-      );
+    const setsMap = new Map();
+    for (const r of rows) {
+      if (!setsMap.has(r.set_id)) {
+        setsMap.set(r.set_id, {
+          id: r.set_id,
+          title: r.title,
+          description: r.description || '',
+          cards: [],
+          createdAt: typeof r.created_at === 'number' ? r.created_at : parseInt(r.created_at, 10) || Date.now(),
+          updatedAt: typeof r.updated_at === 'number' ? r.updated_at : parseInt(r.updated_at, 10) || Date.now()
+        });
+      }
 
-      const cards = cardRows.map(c => ({
-        id: c.id,
-        english: c.english,
-        vietnamese: c.vietnamese,
-        example: c.example || '',
-        exampleTranslation: c.exampleTranslation || '',
-        stats: {
-          correct: Math.max(0, parseInt(c.correct) || 0),
-          wrong: Math.max(0, parseInt(c.wrong) || 0)
-        }
-      }));
-
-      updatedSetsList.push({
-        id: setRow.id,
-        title: setRow.title,
-        description: setRow.description || '',
-        cards,
-        createdAt: setRow.created_at,
-        updatedAt: setRow.updated_at
-      });
+      if (r.card_id) {
+        setsMap.get(r.set_id).cards.push({
+          id: r.card_id,
+          english: r.english,
+          vietnamese: r.vietnamese,
+          example: r.example || '',
+          exampleTranslation: r.example_translation || '',
+          stats: {
+            correct: Math.max(0, parseInt(r.correct) || 0),
+            wrong: Math.max(0, parseInt(r.wrong) || 0)
+          }
+        });
+      }
     }
 
-    return res.json({ message: 'Đồng bộ bài học vào tài khoản thành công.', sets: updatedSetsList });
+    return res.json({ message: 'Đồng bộ bài học vào tài khoản thành công.', sets: Array.from(setsMap.values()) });
   } catch (err) {
     console.error('Batch sync error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ khi đồng bộ.' });
   }
 });
 
-// Item 78: Delete a set (Foreign key CASCADE automatically deletes child cards & card_progress)
+// Item 43 Fix: Delete set wrapped in transaction
 router.delete('/:id', async (req, res) => {
   try {
     const userId = req.user.id;
     const setId = req.params.id;
 
-    const result = await run('DELETE FROM vocab_sets WHERE id = ? AND user_id = ?', [setId, userId]);
-    if (result.changes === 0) {
+    let deleted = false;
+    await withTransaction(async (tx) => {
+      const result = await tx.run('DELETE FROM vocab_sets WHERE id = ? AND user_id = ?', [setId, userId]);
+      if (result.changes > 0) deleted = true;
+    });
+
+    if (!deleted) {
       return res.status(404).json({ error: 'Không tìm thấy bộ từ vựng cần xóa.' });
     }
 
@@ -288,16 +345,19 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Item 70 & 77 & P0 Fix (10): Set Ownership Verification for Card Progress stats
+// Item 39-41, 70, 77: Word stats with composite PK (user_id, set_id, card_id)
 router.post('/word-stats', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId, cardId, isCorrect } = req.body;
 
+    if (!setId || !cardId) {
+      return res.status(400).json({ error: 'Thiếu thông tin setId hoặc cardId.' });
+    }
+
     const isTrue = isCorrect === true || isCorrect === 'true' || isCorrect === 1;
     const now = Date.now();
 
-    // Verify card exists AND belongs to a set owned by the current logged-in user (Item 10 Fix)
     const card = await getOne(
       `SELECT c.id FROM cards c
        JOIN vocab_sets s ON s.id = c.set_id
@@ -309,12 +369,11 @@ router.post('/word-stats', async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy thẻ từ vựng hoặc bạn không có quyền truy cập.' });
     }
 
-    // Atomic SQL UPSERT on card_progress table
     if (isTrue) {
       await run(
         `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
          VALUES (?, ?, ?, 1, 0, ?)
-         ON CONFLICT(user_id, card_id) DO UPDATE SET
+         ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
            correct = card_progress.correct + 1,
            updated_at = excluded.updated_at`,
         [userId, setId, cardId, now]
@@ -323,14 +382,13 @@ router.post('/word-stats', async (req, res) => {
       await run(
         `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
          VALUES (?, ?, ?, 0, 1, ?)
-         ON CONFLICT(user_id, card_id) DO UPDATE SET
+         ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
            wrong = card_progress.wrong + 1,
            updated_at = excluded.updated_at`,
         [userId, setId, cardId, now]
       );
     }
 
-    // Update set timestamp
     await run('UPDATE vocab_sets SET updated_at = ? WHERE id = ? AND user_id = ?', [now, setId, userId]);
 
     return res.json({ message: 'Đã cập nhật tiến trình từ vựng nguyên tử.' });
@@ -340,13 +398,25 @@ router.post('/word-stats', async (req, res) => {
   }
 });
 
-// Item 73 & P0 Fix (15, 16): Reset progress with withTransaction
+// Item 42 Fix: Reset progress validates non-existent setId and returns 404
 router.post('/reset-progress', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.body;
 
+    if (!setId) {
+      return res.status(400).json({ error: 'Thiếu thông tin setId.' });
+    }
+
     const now = Date.now();
+
+    if (setId !== 'all') {
+      const setExist = await getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setId, userId]);
+      if (!setExist) {
+        return res.status(404).json({ error: 'Không tìm thấy bộ từ vựng cần đặt lại tiến trình.' });
+      }
+    }
+
     await withTransaction(async (tx) => {
       if (setId === 'all') {
         await tx.run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ?', [now, userId]);

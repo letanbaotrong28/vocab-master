@@ -36,12 +36,26 @@ export const closeDb = async () => {
   }
 };
 
-// Helper to convert SQLite '?' placeholders to PostgreSQL '$1, $2, $3...' and sanitize BEGIN IMMEDIATE
+// Item 49 Fix: Smart SQL placeholder converter (ignores '?' inside single-quoted string literals)
 const convertPlaceholders = (sql) => {
   if (!isPg) return sql;
   let formatted = sql.replace(/BEGIN\s+IMMEDIATE/gi, 'BEGIN');
   let paramIndex = 1;
-  return formatted.replace(/\?/g, () => `$${paramIndex++}`);
+  let inSingleQuote = false;
+  let result = '';
+
+  for (let i = 0; i < formatted.length; i++) {
+    const char = formatted[i];
+    if (char === "'") {
+      inSingleQuote = !inSingleQuote;
+      result += char;
+    } else if (char === '?' && !inSingleQuote) {
+      result += `$${paramIndex++}`;
+    } else {
+      result += char;
+    }
+  }
+  return result;
 };
 
 export const query = async (sql, params = []) => {
@@ -245,7 +259,7 @@ export const initDb = async () => {
     )
   `);
 
-  // Relational Card Progress table with card_id FK (Item 9 Fix)
+  // Relational Card Progress table with composite PK (user_id, set_id, card_id) (Item 39, 40, 41 Fix)
   await run(`
     CREATE TABLE IF NOT EXISTS card_progress (
       user_id INTEGER NOT NULL,
@@ -254,7 +268,7 @@ export const initDb = async () => {
       correct INTEGER DEFAULT 0,
       wrong INTEGER DEFAULT 0,
       updated_at BIGINT,
-      PRIMARY KEY (user_id, card_id),
+      PRIMARY KEY (user_id, set_id, card_id),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (set_id) REFERENCES vocab_sets(id) ON DELETE CASCADE,
       FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
