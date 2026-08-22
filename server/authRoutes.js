@@ -6,10 +6,20 @@ import { JWT_SECRET, authenticateToken } from './authMiddleware.js';
 
 const router = express.Router();
 
-// Item 40: Rate Limiter Middleware (10 requests per minute per IP for auth endpoints)
+// Item 80 Fix: Trust proxy IP resolution & rate limiter RAM map cleanup interval
 const rateLimitMap = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now > record.resetTime) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 10 * 60 * 1000);
+
 const authRateLimiter = (maxRequests = 10, windowMs = 60000) => (req, res, next) => {
-  const ip = req.ip || req.connection.remoteAddress || '127.0.0.1';
+  const ip = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
   const now = Date.now();
   const userRecord = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs };
 
@@ -28,31 +38,49 @@ const authRateLimiter = (maxRequests = 10, windowMs = 60000) => (req, res, next)
   next();
 };
 
+// Item 69, 70, 81 Fix: Secure Cookie Setter & JWT Issuer/Audience Signer
+const setAuthTokenCookie = (res, token) => {
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
+};
+
+const signToken = (payload) => {
+  return jwt.sign(payload, JWT_SECRET, {
+    expiresIn: '7d',
+    issuer: 'VocabMaster',
+    audience: 'VocabMasterUser',
+    algorithm: 'HS256'
+  });
+};
+
 // Register new account
 router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Item 37 Fix: Strict type checking and max length validation
     if (typeof username !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Tên tài khoản và mật khẩu phải là chuỗi văn bản.' });
     }
 
-    const cleanUsername = username.trim().toLowerCase(); // Item 38 Fix: Normalize username to lowercase
+    // Item 78 Fix: Normalize Unicode NFC & enforce clean username policy
+    const cleanUsername = String(username).normalize('NFC').trim().toLowerCase();
 
     if (!cleanUsername || !password) {
       return res.status(400).json({ error: 'Tên tài khoản và mật khẩu không được để trống.' });
     }
 
-    if (cleanUsername.length < 3 || cleanUsername.length > 50) {
-      return res.status(400).json({ error: 'Tên tài khoản phải từ 3 đến 50 ký tự.' });
+    if (!/^[a-z0-9_\-\.]{3,30}$/.test(cleanUsername)) {
+      return res.status(400).json({ error: 'Tên tài khoản chỉ được chứa chữ cái không dấu, chữ số, dấu gạch ngang và dấu chấm (3-30 ký tự).' });
     }
 
     if (password.length < 6 || password.length > 100) {
       return res.status(400).json({ error: 'Mật khẩu phải từ 6 đến 100 ký tự.' });
     }
 
-    // Item 39 Fix: Race condition prevention on duplicate username insert
     try {
       const passwordHash = await bcrypt.hash(password, 10);
       const result = await run(
@@ -63,13 +91,9 @@ router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
       const userId = result.lastID;
       const tokenVersion = 1;
       const payload = { id: userId, username: cleanUsername, tokenVersion };
-      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d', algorithm: 'HS256' });
+      const token = signToken(payload);
 
-      res.cookie('refreshToken', token, {
-        httpOnly: true,
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000
-      });
+      setAuthTokenCookie(res, token);
 
       return res.json({
         message: 'Đăng ký tài khoản thành công!',
@@ -93,12 +117,11 @@ router.post('/login', authRateLimiter(10, 60000), async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Item 37 Fix: Strict type validation
     if (typeof username !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Tên tài khoản và mật khẩu phải là chuỗi văn bản.' });
     }
 
-    const cleanUsername = username.trim().toLowerCase(); // Item 38 Fix: Normalize username
+    const cleanUsername = String(username).normalize('NFC').trim().toLowerCase();
 
     if (!cleanUsername || !password) {
       return res.status(400).json({ error: 'Vui lòng nhập tên tài khoản và mật khẩu.' });
@@ -117,13 +140,9 @@ router.post('/login', authRateLimiter(10, 60000), async (req, res) => {
 
     const tokenVersion = user.token_version || 1;
     const payload = { id: user.id, username: user.username, tokenVersion };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d', algorithm: 'HS256' });
+    const token = signToken(payload);
 
-    res.cookie('refreshToken', token, {
-      httpOnly: true,
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
+    setAuthTokenCookie(res, token);
 
     return res.json({
       message: 'Đăng nhập thành công!',
@@ -149,7 +168,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   }
 });
 
-// Item 44 Fix: Change Password Endpoint
+// Item 77 Fix: Change Password Endpoint issuing fresh token
 router.post('/change-password', authenticateToken, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
@@ -172,32 +191,36 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(newPassword, 10);
-    await run('UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', [newHash, req.user.id]);
+    const newVersion = (user.token_version || 1) + 1;
+    await run('UPDATE users SET password_hash = ?, token_version = ? WHERE id = ?', [newHash, newVersion, req.user.id]);
 
-    return res.json({ message: 'Đổi mật khẩu thành công! Đã đăng xuất khỏi các thiết bị khác.' });
+    const newToken = signToken({ id: user.id, username: user.username, tokenVersion: newVersion });
+    setAuthTokenCookie(res, newToken);
+
+    return res.json({ message: 'Đổi mật khẩu thành công! Mật khẩu đã được cập nhật.', token: newToken });
   } catch (err) {
     console.error('Change password error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ khi đổi mật khẩu.' });
   }
 });
 
-// Item 44 Fix: Logout All Devices Endpoint
+// Logout All Devices Endpoint
 router.post('/logout-all', authenticateToken, async (req, res) => {
   try {
     await run('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [req.user.id]);
-    res.clearCookie('refreshToken');
+    res.clearCookie('token');
     return res.json({ message: 'Đã đăng xuất thành công khỏi tất cả thiết bị!' });
   } catch (err) {
     return res.status(500).json({ error: 'Lỗi máy chủ khi đăng xuất tất cả thiết bị.' });
   }
 });
 
-// Item 42: Server-side Logout & Token Revocation
+// Server-side Logout & Token Revocation
 router.post('/logout', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     await run('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [userId]);
-    res.clearCookie('refreshToken');
+    res.clearCookie('token');
     return res.json({ message: 'Đã đăng xuất thành công.' });
   } catch (err) {
     console.error('Logout error:', err);

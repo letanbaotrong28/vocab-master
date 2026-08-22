@@ -1,10 +1,12 @@
 const TOKEN_KEY = 'vocabmaster_auth_token';
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
-// Centralized Request Handler (Item 86 & 87 Fix: AbortController timeout & central error handling)
+// Centralized Request Handler (Item 64, 66, 67, 68 Fix: Assign error.status, credentials include & sync auth event)
 const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
   if (!navigator.onLine) {
-    throw new Error('Không có kết nối Internet. Vui lòng kiểm tra lại mạng.');
+    const netErr = new Error('Không có kết nối Internet. Vui lòng kiểm tra lại mạng.');
+    netErr.status = 0;
+    throw netErr;
   }
 
   const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
@@ -14,6 +16,7 @@ const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
   try {
     const res = await fetch(fullUrl, {
       ...options,
+      credentials: 'include', // Item 68 Fix: Send HttpOnly cookies with request
       signal: controller.signal
     });
 
@@ -29,27 +32,25 @@ const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
     }
 
     if (!res.ok) {
-      if (res.status === 401) {
+      const err = new Error(data.error || `Yêu cầu thất bại (Mã lỗi ${res.status}).`);
+      err.status = res.status; // Item 64 Fix: Attach HTTP status code to Error object
+      err.data = data;
+
+      if (res.status === 401 || res.status === 403) {
         apiService.removeToken();
-        throw new Error(data.error || 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ. Vui lòng đăng nhập lại.');
+        // Item 66 & 67 Fix: Broadcast auth unauthorized event to clear React user state synchronously
+        window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { status: res.status, error: data.error } }));
       }
-      if (res.status === 403) {
-        throw new Error(data.error || 'Bạn không có quyền thực hiện thao tác này.');
-      }
-      if (res.status === 413) {
-        throw new Error('Dữ liệu gửi lên vượt quá dung lượng cho phép của máy chủ (Max 10MB).');
-      }
-      if (res.status >= 500) {
-        throw new Error(data.error || 'Máy chủ gặp sự cố nội bộ. Vui lòng thử lại sau.');
-      }
-      throw new Error(data.error || `Yêu cầu thất bại (Mã lỗi ${res.status}).`);
+      throw err;
     }
 
     return data;
   } catch (err) {
     clearTimeout(timer);
     if (err.name === 'AbortError') {
-      throw new Error('Yêu cầu tới máy chủ bị quá thời gian (Timeout 15 giây). Vui lòng thử lại.');
+      const timeoutErr = new Error('Yêu cầu tới máy chủ bị quá thời gian (Timeout 15 giây). Vui lòng thử lại.');
+      timeoutErr.status = 408;
+      throw timeoutErr;
     }
     throw err;
   }
@@ -64,6 +65,7 @@ export const apiService = {
     const token = apiService.getToken();
     return {
       'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest', // Item 29 CSRF Header
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
   },
@@ -72,7 +74,7 @@ export const apiService = {
   register: async (username, password) => {
     const data = await requestFetch('/api/auth/register', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify({ username, password })
     });
     if (data.token) apiService.setToken(data.token);
@@ -82,13 +84,14 @@ export const apiService = {
   login: async (username, password) => {
     const data = await requestFetch('/api/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify({ username, password })
     });
     if (data.token) apiService.setToken(data.token);
     return data;
   },
 
+  // Item 65 Fix: Differentiate 401/403 from 500/Network error in getMe
   getMe: async () => {
     const token = apiService.getToken();
     if (!token) return null;
@@ -99,12 +102,23 @@ export const apiService = {
       });
       return data.user;
     } catch (err) {
-      // Item 34 Fix: Only remove token on 401 Unauthorized or 403 Forbidden. Do NOT log out user on 500 or offline errors.
       if (err.status === 401 || err.status === 403) {
         apiService.removeToken();
+        return null;
       }
-      return null;
+      // Re-throw 500 or Network errors so app does NOT drop user to offline local mode erroneously
+      throw err;
     }
+  },
+
+  changePassword: async (oldPassword, newPassword) => {
+    const data = await requestFetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: apiService.getAuthHeaders(),
+      body: JSON.stringify({ oldPassword, newPassword })
+    });
+    if (data.token) apiService.setToken(data.token);
+    return data;
   },
 
   logout: async () => {
@@ -117,6 +131,7 @@ export const apiService = {
       console.error('Logout revocation notice:', e);
     } finally {
       apiService.removeToken();
+      window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { status: 401 } }));
     }
   },
 

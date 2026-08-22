@@ -48,8 +48,18 @@ export const AppProvider = ({ children }) => {
     const loadedStreak = storageService.getStreak();
     setStreak(loadedStreak);
 
+    // Item 66 & 67 Fix: Synchronize React auth state on unauthorized 401/403 event
+    const handleUnauthorized = () => {
+      setUser(null);
+      resetSessionState();
+      setSets(storageService.getSets());
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+
     // Initial auth check
     checkAuthAndLoadSets();
+
+    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
   }, []);
 
   const checkAuthAndLoadSets = async () => {
