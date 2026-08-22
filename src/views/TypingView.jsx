@@ -122,7 +122,7 @@ export const TypingView = () => {
 
   useEffect(() => {
     startTypingSession();
-  }, [currentSet?.id, currentSet?.updatedAt, direction]);
+  }, [currentSet?.id, direction]);
 
   // Item 59 Fix: Reliable auto-focus on input element mount
   useEffect(() => {

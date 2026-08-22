@@ -1,5 +1,5 @@
 import express from 'express';
-import { query, getOne, run } from './db.js';
+import { query, getOne, run, withTransaction } from './db.js';
 import { authenticateToken } from './authMiddleware.js';
 
 const router = express.Router();
@@ -65,7 +65,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Item 70 & 74 & 75: Save or Update a single set in relational tables
+// Item 70, 74, 75 & P0 Fix (15, 16, 7, 8, 9): Save or Update single set with withTransaction, scoped cards & orphan cleanup
 router.post('/', async (req, res) => {
   try {
     const userId = req.user.id;
@@ -79,84 +79,86 @@ router.post('/', async (req, res) => {
     const now = Date.now();
     const createdTime = typeof createdAt === 'number' ? createdAt : now;
 
-    await run('BEGIN IMMEDIATE');
+    await withTransaction(async (tx) => {
+      const existing = await tx.getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setObjId, userId]);
 
-    const existing = await getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setObjId, userId]);
-
-    if (existing) {
-      await run(
-        `UPDATE vocab_sets SET title = ?, description = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-        [title, description || '', now, setObjId, userId]
-      );
-    } else {
-      await run(
-        `INSERT INTO vocab_sets (id, user_id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-        [setObjId, userId, title, description || '', createdTime, now]
-      );
-    }
-
-    // Save cards relationally
-    const validCards = cards.filter(c => c.english && c.vietnamese);
-    const cardIdSet = new Set();
-
-    for (let i = 0; i < validCards.length; i++) {
-      const c = validCards[i];
-      let cardId = String(c.id || `card-${setObjId}-${i}`).replace(/[\/\?#]/g, '_').trim();
-      while (cardIdSet.has(cardId)) {
-        cardId = `${cardId}_${Math.random().toString(36).substring(2, 6)}`;
+      if (existing) {
+        await tx.run(
+          `UPDATE vocab_sets SET title = ?, description = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+          [title, description || '', now, setObjId, userId]
+        );
+      } else {
+        await tx.run(
+          `INSERT INTO vocab_sets (id, user_id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          [setObjId, userId, title, description || '', createdTime, now]
+        );
       }
-      cardIdSet.add(cardId);
 
-      await run(
-        `INSERT INTO cards (id, set_id, english, vietnamese, example, example_translation, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           english = excluded.english,
-           vietnamese = excluded.vietnamese,
-           example = excluded.example,
-           example_translation = excluded.example_translation,
-           position = excluded.position`,
-        [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
-      );
+      // Save cards relationally with set-scoped ID (Item 7 & 8 Fix)
+      const validCards = cards.filter(c => c.english && c.vietnamese);
+      const cardIdSet = new Set();
 
-      // Preserve stats if sent from client
-      if (c.stats) {
-        const correctCount = Math.max(0, parseInt(c.stats.correct) || 0);
-        const wrongCount = Math.max(0, parseInt(c.stats.wrong) || 0);
-        if (correctCount > 0 || wrongCount > 0) {
-          await run(
-            `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(user_id, card_id) DO UPDATE SET
-               correct = MAX(card_progress.correct, excluded.correct),
-               wrong = MAX(card_progress.wrong, excluded.wrong),
-               updated_at = excluded.updated_at`,
-            [userId, setObjId, cardId, correctCount, wrongCount, now]
-          );
+      for (let i = 0; i < validCards.length; i++) {
+        const c = validCards[i];
+        const rawCardId = String(c.id || `card_${i}`).replace(/[\/\?#]/g, '_').trim();
+        const cardId = rawCardId.startsWith(`${setObjId}_`) ? rawCardId : `${setObjId}_${rawCardId}`;
+        cardIdSet.add(cardId);
+
+        await tx.run(
+          `INSERT INTO cards (id, set_id, english, vietnamese, example, example_translation, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             english = excluded.english,
+             vietnamese = excluded.vietnamese,
+             example = excluded.example,
+             example_translation = excluded.example_translation,
+             position = excluded.position
+           WHERE cards.set_id = excluded.set_id`,
+          [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
+        );
+
+        if (c.stats) {
+          const correctCount = Math.max(0, parseInt(c.stats.correct) || 0);
+          const wrongCount = Math.max(0, parseInt(c.stats.wrong) || 0);
+          if (correctCount > 0 || wrongCount > 0) {
+            await tx.run(
+              `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, card_id) DO UPDATE SET
+                  correct = CASE WHEN excluded.correct > card_progress.correct THEN excluded.correct ELSE card_progress.correct END,
+                  wrong = CASE WHEN excluded.wrong > card_progress.wrong THEN excluded.wrong ELSE card_progress.wrong END,
+                 updated_at = excluded.updated_at`,
+              [userId, setObjId, cardId, correctCount, wrongCount, now]
+            );
+          }
         }
       }
-    }
 
-    // Delete cards that were removed in editor
-    if (cardIdSet.size > 0) {
-      const placeholders = Array.from(cardIdSet).map(() => '?').join(',');
-      await run(
-        `DELETE FROM cards WHERE set_id = ? AND id NOT IN (${placeholders})`,
-        [setObjId, ...Array.from(cardIdSet)]
-      );
-    }
-
-    await run('COMMIT');
+      // Delete cards that were removed in editor & orphan card_progress (Item 9 Fix)
+      if (cardIdSet.size > 0) {
+        const placeholders = Array.from(cardIdSet).map(() => '?').join(',');
+        await tx.run(
+          `DELETE FROM card_progress WHERE set_id = ? AND card_id NOT IN (${placeholders})`,
+          [setObjId, ...Array.from(cardIdSet)]
+        );
+        await tx.run(
+          `DELETE FROM cards WHERE set_id = ? AND id NOT IN (${placeholders})`,
+          [setObjId, ...Array.from(cardIdSet)]
+        );
+      } else {
+        await tx.run(`DELETE FROM card_progress WHERE set_id = ?`, [setObjId]);
+        await tx.run(`DELETE FROM cards WHERE set_id = ?`, [setObjId]);
+      }
+    });
 
     return res.json({ message: 'Đã lưu bộ từ vựng thành công.', setId: setObjId });
   } catch (err) {
-    await run('ROLLBACK').catch(() => {});
     console.error('Save set error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ khi lưu bộ từ vựng.' });
   }
 });
 
-// Item 72: Sync/batch insert local sets into user account with relational tables & transaction
+// Item 72 & P0 Fix (15, 16): Sync/batch insert local sets with withTransaction & scoped cards
 router.post('/sync-batch', async (req, res) => {
   try {
     const userId = req.user.id;
@@ -166,63 +168,63 @@ router.post('/sync-batch', async (req, res) => {
       return res.status(400).json({ error: 'Danh sách bộ từ không hợp lệ.' });
     }
 
-    await run('BEGIN IMMEDIATE');
+    await withTransaction(async (tx) => {
+      for (const setItem of sets) {
+        const setObjId = getUserSetId(userId, setItem.id);
+        const createdTime = typeof setItem.createdAt === 'number' ? setItem.createdAt : Date.now();
+        const now = Date.now();
 
-    for (const setItem of sets) {
-      const setObjId = getUserSetId(userId, setItem.id);
-      const createdTime = typeof setItem.createdAt === 'number' ? setItem.createdAt : Date.now();
-      const now = Date.now();
+        const existing = await tx.getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setObjId, userId]);
+        if (existing) {
+          await tx.run(
+            `UPDATE vocab_sets SET title = ?, description = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+            [setItem.title, setItem.description || '', now, setObjId, userId]
+          );
+        } else {
+          await tx.run(
+            `INSERT INTO vocab_sets (id, user_id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+            [setObjId, userId, setItem.title, setItem.description || '', createdTime, now]
+          );
+        }
 
-      const existing = await getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setObjId, userId]);
-      if (existing) {
-        await run(
-          `UPDATE vocab_sets SET title = ?, description = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-          [setItem.title, setItem.description || '', now, setObjId, userId]
-        );
-      } else {
-        await run(
-          `INSERT INTO vocab_sets (id, user_id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-          [setObjId, userId, setItem.title, setItem.description || '', createdTime, now]
-        );
-      }
+        const rawCards = Array.isArray(setItem.cards) ? setItem.cards : [];
+        for (let i = 0; i < rawCards.length; i++) {
+          const c = rawCards[i];
+          if (!c.english || !c.vietnamese) continue;
+          const rawCardId = String(c.id || `card_${i}`).replace(/[\/\?#]/g, '_').trim();
+          const cardId = rawCardId.startsWith(`${setObjId}_`) ? rawCardId : `${setObjId}_${rawCardId}`;
 
-      const rawCards = Array.isArray(setItem.cards) ? setItem.cards : [];
-      for (let i = 0; i < rawCards.length; i++) {
-        const c = rawCards[i];
-        if (!c.english || !c.vietnamese) continue;
-        const cardId = String(c.id || `card-${setObjId}-${i}`).replace(/[\/\?#]/g, '_').trim();
+          await tx.run(
+            `INSERT INTO cards (id, set_id, english, vietnamese, example, example_translation, position)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               english = excluded.english,
+               vietnamese = excluded.vietnamese,
+               example = excluded.example,
+               example_translation = excluded.example_translation,
+               position = excluded.position
+             WHERE cards.set_id = excluded.set_id`,
+            [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
+          );
 
-        await run(
-          `INSERT INTO cards (id, set_id, english, vietnamese, example, example_translation, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             english = excluded.english,
-             vietnamese = excluded.vietnamese,
-             example = excluded.example,
-             example_translation = excluded.example_translation,
-             position = excluded.position`,
-          [cardId, setObjId, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
-        );
-
-        if (c.stats) {
-          const correctCount = Math.max(0, parseInt(c.stats.correct) || 0);
-          const wrongCount = Math.max(0, parseInt(c.stats.wrong) || 0);
-          if (correctCount > 0 || wrongCount > 0) {
-            await run(
-              `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, card_id) DO UPDATE SET
-                 correct = MAX(card_progress.correct, excluded.correct),
-                 wrong = MAX(card_progress.wrong, excluded.wrong),
-                 updated_at = excluded.updated_at`,
-              [userId, setObjId, cardId, correctCount, wrongCount, now]
-            );
+          if (c.stats) {
+            const correctCount = Math.max(0, parseInt(c.stats.correct) || 0);
+            const wrongCount = Math.max(0, parseInt(c.stats.wrong) || 0);
+            if (correctCount > 0 || wrongCount > 0) {
+              await tx.run(
+                `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(user_id, card_id) DO UPDATE SET
+                   correct = CASE WHEN excluded.correct > card_progress.correct THEN excluded.correct ELSE card_progress.correct END,
+                   wrong = CASE WHEN excluded.wrong > card_progress.wrong THEN excluded.wrong ELSE card_progress.wrong END,
+                   updated_at = excluded.updated_at`,
+                [userId, setObjId, cardId, correctCount, wrongCount, now]
+              );
+            }
           }
         }
       }
-    }
-
-    await run('COMMIT');
+    });
 
     // Fetch fresh relational sets list
     const setRows = await query('SELECT * FROM vocab_sets WHERE user_id = ? ORDER BY updated_at DESC', [userId]);
@@ -263,7 +265,6 @@ router.post('/sync-batch', async (req, res) => {
 
     return res.json({ message: 'Đồng bộ bài học vào tài khoản thành công.', sets: updatedSetsList });
   } catch (err) {
-    await run('ROLLBACK').catch(() => {});
     console.error('Batch sync error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ khi đồng bộ.' });
   }
@@ -287,7 +288,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Item 70 & 77: 100% Atomic SQL Update for Card Progress stats
+// Item 70 & 77 & P0 Fix (10): Set Ownership Verification for Card Progress stats
 router.post('/word-stats', async (req, res) => {
   try {
     const userId = req.user.id;
@@ -296,10 +297,16 @@ router.post('/word-stats', async (req, res) => {
     const isTrue = isCorrect === true || isCorrect === 'true' || isCorrect === 1;
     const now = Date.now();
 
-    // Check card existence
-    const card = await getOne('SELECT id FROM cards WHERE id = ? AND set_id = ?', [cardId, setId]);
+    // Verify card exists AND belongs to a set owned by the current logged-in user (Item 10 Fix)
+    const card = await getOne(
+      `SELECT c.id FROM cards c
+       JOIN vocab_sets s ON s.id = c.set_id
+       WHERE c.id = ? AND c.set_id = ? AND s.user_id = ?`,
+      [cardId, setId, userId]
+    );
+
     if (!card) {
-      return res.status(404).json({ error: 'Không tìm thấy thẻ từ vựng.' });
+      return res.status(404).json({ error: 'Không tìm thấy thẻ từ vựng hoặc bạn không có quyền truy cập.' });
     }
 
     // Atomic SQL UPSERT on card_progress table
@@ -333,26 +340,25 @@ router.post('/word-stats', async (req, res) => {
   }
 });
 
-// Item 73: Reset progress in relational card_progress table with Atomic Transaction
+// Item 73 & P0 Fix (15, 16): Reset progress with withTransaction
 router.post('/reset-progress', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.body;
 
     const now = Date.now();
-    await run('BEGIN IMMEDIATE');
-    if (setId === 'all') {
-      await run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ?', [now, userId]);
-      await run('UPDATE vocab_sets SET updated_at = ? WHERE user_id = ?', [now, userId]);
-    } else {
-      await run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ? AND set_id = ?', [now, userId, setId]);
-      await run('UPDATE vocab_sets SET updated_at = ? WHERE id = ? AND user_id = ?', [now, setId, userId]);
-    }
-    await run('COMMIT');
+    await withTransaction(async (tx) => {
+      if (setId === 'all') {
+        await tx.run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ?', [now, userId]);
+        await tx.run('UPDATE vocab_sets SET updated_at = ? WHERE user_id = ?', [now, userId]);
+      } else {
+        await tx.run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ? AND set_id = ?', [now, userId, setId]);
+        await tx.run('UPDATE vocab_sets SET updated_at = ? WHERE id = ? AND user_id = ?', [now, setId, userId]);
+      }
+    });
 
     return res.json({ message: 'Đã đặt lại tiến trình học.' });
   } catch (err) {
-    await run('ROLLBACK').catch(() => {});
     console.error('Reset progress error:', err);
     return res.status(500).json({ error: 'Lỗi khi đặt lại tiến trình.' });
   }

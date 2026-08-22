@@ -142,7 +142,7 @@ export const LearnView = () => {
 
   useEffect(() => {
     startQuiz();
-  }, [currentSet?.id, currentSet?.updatedAt, direction]);
+  }, [currentSet?.id, direction]);
 
   const currentQ = quizQuestions[currentIndex];
 

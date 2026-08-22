@@ -1,6 +1,11 @@
 import jwt from 'jsonwebtoken';
 import { getOne } from './db.js';
 
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.error('FATAL ERROR: JWT_SECRET environment variable is required in production mode!');
+  process.exit(1);
+}
+
 export const JWT_SECRET = process.env.JWT_SECRET || 'vocabmaster_default_fallback_secret_key_2026';
 
 export const authenticateToken = async (req, res, next) => {

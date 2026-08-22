@@ -105,7 +105,6 @@ export const storageService = {
     });
 
     sets[setIndex].cards = cards;
-    sets[setIndex].updatedAt = Date.now();
     storageService.saveSets(sets);
     return sets;
   },
