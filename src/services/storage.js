@@ -1,4 +1,5 @@
 import { INITIAL_DEMO_SETS } from '../data/demoSets';
+import { SetSchema } from './schema';
 
 const STORAGE_KEY = 'quizlet_vocab_sets_v1';
 const INITIALIZED_KEY = 'quizlet_vocab_initialized_v1';
@@ -154,6 +155,11 @@ export const storageService = {
     const usedSetIds = new Set();
 
     const normalized = parsed.map((set, setIdx) => {
+      // Item 100 & 101 Fix: Use SetSchema to validate set shape and require at least 1 valid card
+      const schemaCheck = SetSchema.validate(set);
+      if (!schemaCheck.valid) {
+        throw new Error(`Bộ từ #${setIdx + 1}: ${schemaCheck.error}`);
+      }
       // Sanitize Set ID (remove dangerous special characters / ? #)
       let rawSetId = String(set.id || `imported-set-${Date.now()}-${setIdx}`)
         .replace(/[\/\?#]/g, '_')
@@ -271,7 +277,9 @@ export const storageService = {
       const parsed = JSON.parse(raw);
 
       const today = storageService.getLocalDateString(Date.now());
-      const yesterday = storageService.getLocalDateString(Date.now() - 86400000);
+      const yesterdayDate = new Date();
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const yesterday = storageService.getLocalDateString(yesterdayDate.getTime());
       const parsedCount = Math.max(0, parseInt(parsed.count, 10) || 0);
 
       if (parsed.lastDate === today || parsed.lastDate === yesterday) {
@@ -290,7 +298,9 @@ export const storageService = {
     try {
       const key = storageService.getStreakKey(userId);
       const today = storageService.getLocalDateString(Date.now());
-      const yesterday = storageService.getLocalDateString(Date.now() - 86400000);
+      const yesterdayDate = new Date();
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const yesterday = storageService.getLocalDateString(yesterdayDate.getTime());
 
       const currentStreak = storageService.getStreak(userId);
       const currentCount = Math.max(0, parseInt(currentStreak.count, 10) || 0);

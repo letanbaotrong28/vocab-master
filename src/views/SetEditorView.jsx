@@ -31,8 +31,15 @@ export const SetEditorView = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
 
-  // Item 15 & 16 Fix: Added sets dependency and handling for missing editingSetId
+  // Item 90 Fix: Prevent background sets update from overwriting active user draft
+  const initializedSetIdRef = React.useRef(null);
+
   useEffect(() => {
+    const currentKey = isEditing ? String(editingSetId) : 'new';
+    if (initializedSetIdRef.current === currentKey && isDirty) {
+      return;
+    }
+
     if (isEditing) {
       const existingSet = sets.find(s => String(s.id) === String(editingSetId));
       if (existingSet) {
@@ -42,6 +49,7 @@ export const SetEditorView = () => {
           { id: `card-${Date.now()}-1`, english: '', vietnamese: '', example: '', exampleTranslation: '', stats: { correct: 0, wrong: 0 } }
         ]);
         setIsDirty(false);
+        initializedSetIdRef.current = currentKey;
       } else {
         showToast('Bộ từ vựng không tồn tại hoặc đã bị xóa.', 'warning');
         navigateTo('home');
@@ -54,6 +62,7 @@ export const SetEditorView = () => {
         { id: `card-${Date.now()}-2`, english: '', vietnamese: '', example: '', exampleTranslation: '', stats: { correct: 0, wrong: 0 } }
       ]);
       setIsDirty(false);
+      initializedSetIdRef.current = currentKey;
     }
   }, [isEditing, editingSetId, sets]);
 

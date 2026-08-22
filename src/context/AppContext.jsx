@@ -151,10 +151,14 @@ export const AppProvider = ({ children }) => {
     setStreak(updatedStreak);
   };
 
-  // Item 125 Fix: URL Hash Navigation & Deep-Linking with Browser Back/Forward support
+  // Item 86 & 125 Fix: URL Hash Navigation & State Clean-up on route changes
   const navigateTo = (view, setId = null) => {
     setActiveView(view);
-    if (setId) {
+
+    if (view === 'home' || view === 'create') {
+      setCurrentSetId(null);
+      setEditingSetId(null);
+    } else if (setId) {
       setCurrentSetId(setId);
       if (view === 'edit') {
         setEditingSetId(setId);
@@ -170,37 +174,53 @@ export const AppProvider = ({ children }) => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Item 87 & 88 Fix: Listen to both popstate and hashchange with safe URI decoding
   useEffect(() => {
     const handleHashChange = () => {
-      const hash = window.location.hash.replace(/^#/, '');
-      if (!hash) {
-        setActiveView('home');
-        return;
-      }
-      const parts = hash.split('/');
-      const view = parts[0];
-      const setId = parts[1] ? decodeURIComponent(parts[1]) : null;
-
-      if (['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress'].includes(view)) {
-        setActiveView(view);
-        if (setId) {
-          setCurrentSetId(setId);
-          if (view === 'edit') setEditingSetId(setId);
+      try {
+        const hash = window.location.hash.replace(/^#/, '');
+        if (!hash) {
+          setActiveView('home');
+          setCurrentSetId(null);
+          setEditingSetId(null);
+          return;
         }
+        const parts = hash.split('/');
+        const view = parts[0];
+        const setId = parts[1] ? decodeURIComponent(parts[1]) : null;
+
+        if (['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress'].includes(view)) {
+          setActiveView(view);
+          if (view === 'home' || view === 'create') {
+            setCurrentSetId(null);
+            setEditingSetId(null);
+          } else if (setId) {
+            setCurrentSetId(setId);
+            if (view === 'edit') setEditingSetId(setId);
+          }
+        }
+      } catch (e) {
+        console.warn('Invalid URI encoding in route hash:', e);
       }
     };
 
     window.addEventListener('popstate', handleHashChange);
+    window.addEventListener('hashchange', handleHashChange);
     handleHashChange();
-    return () => window.removeEventListener('popstate', handleHashChange);
+    return () => {
+      window.removeEventListener('popstate', handleHashChange);
+      window.removeEventListener('hashchange', handleHashChange);
+    };
   }, []);
 
-  // Toast Notification
-  const showToast = (message, type = 'info') => {
+  // Item 92 Fix: Clear previous toast timer to prevent premature dismissal
+  const toastTimerRef = React.useRef(null);
+  const showToast = (message, type = 'info', duration = 3000) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ message, type, id: Date.now() });
-    setTimeout(() => {
+    toastTimerRef.current = setTimeout(() => {
       setToast(null);
-    }, 3000);
+    }, duration);
   };
 
   // Save or Update Set

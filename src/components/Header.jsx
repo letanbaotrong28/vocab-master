@@ -16,12 +16,21 @@ export const Header = () => {
     logoutUser
   } = useApp();
 
+  const safeNavigate = (view) => {
+    if ((activeView === 'edit' || activeView === 'create') && view !== activeView) {
+      if (!window.confirm('Bạn có thể có thay đổi chưa lưu trong trình biên tập. Bạn có chắc chắn muốn rời đi?')) {
+        return;
+      }
+    }
+    navigateTo(view);
+  };
+
   return (
     <>
       <header className="main-header">
         <div className="header-container container">
           {/* Brand Logo */}
-          <div className="header-brand" onClick={() => navigateTo('home')}>
+          <div className="header-brand" onClick={() => safeNavigate('home')}>
             <div className="brand-logo-icon">
               <BookOpen size={24} color="#ffffff" />
             </div>
@@ -35,7 +44,7 @@ export const Header = () => {
           <nav className="header-nav hide-mobile">
             <button 
               className={`nav-item ${activeView === 'home' ? 'active' : ''}`}
-              onClick={() => navigateTo('home')}
+              onClick={() => safeNavigate('home')}
             >
               <Layers size={18} />
               <span>Bộ từ vựng</span>
@@ -98,7 +107,7 @@ export const Header = () => {
 
             <button 
               className="btn btn-primary btn-sm hide-mobile"
-              onClick={() => navigateTo('create')}
+              onClick={() => safeNavigate('create')}
             >
               <Plus size={18} />
               Tạo mới
@@ -111,7 +120,7 @@ export const Header = () => {
       <nav className="mobile-bottom-nav">
         <button 
           className={`mobile-nav-item ${activeView === 'home' ? 'active' : ''}`}
-          onClick={() => navigateTo('home')}
+          onClick={() => safeNavigate('home')}
         >
           <div className="mobile-nav-icon-wrapper">
             <Layers size={20} />
@@ -122,7 +131,7 @@ export const Header = () => {
 
         <button 
           className={`mobile-nav-item ${activeView === 'create' || activeView === 'edit' ? 'active' : ''}`}
-          onClick={() => navigateTo('create')}
+          onClick={() => safeNavigate('create')}
         >
           <div className="mobile-nav-icon-wrapper create-icon">
             <Plus size={22} />
