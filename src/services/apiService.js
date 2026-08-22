@@ -1,7 +1,21 @@
-const TOKEN_KEY = 'vocabmaster_auth_token';
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+// Item 83 Fix: Exponential Backoff Retry Helper
+export const retryWithBackoff = async (fn, maxRetries = 2, delayMs = 1000) => {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (err.status === 401 || err.status === 403 || err.status === 400 || attempt === maxRetries) {
+        throw err;
+      }
+      await new Promise(res => setTimeout(res, delayMs * Math.pow(2, attempt)));
+    }
+  }
+  throw lastErr;
+};
 
-// Centralized Request Handler (Item 64, 66, 67, 68 Fix: Assign error.status, credentials include & sync auth event)
+// Centralized Request Handler (Item 64, 66, 67, 68, 84 Fix: Assign error.status, credentials include & timeout cleared after reading body)
 const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
   if (!navigator.onLine) {
     const netErr = new Error('Không có kết nối Internet. Vui lòng kiểm tra lại mạng.');
@@ -17,10 +31,8 @@ const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
     const res = await fetch(fullUrl, {
       ...options,
       credentials: 'include', // Item 68 Fix: Send HttpOnly cookies with request
-      signal: controller.signal
+      signal: options.signal || controller.signal // Item 84 Fix: Accept external AbortSignal on unmount
     });
-
-    clearTimeout(timer);
 
     const contentType = res.headers.get('content-type');
     let data = {};
@@ -31,14 +43,15 @@ const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
       data = { error: text || 'Phản hồi từ máy chủ không ở định dạng JSON.' };
     }
 
+    clearTimeout(timer); // Item 84 Fix: Clear timer ONLY AFTER reading complete response body
+
     if (!res.ok) {
       const err = new Error(data.error || `Yêu cầu thất bại (Mã lỗi ${res.status}).`);
-      err.status = res.status; // Item 64 Fix: Attach HTTP status code to Error object
+      err.status = res.status;
       err.data = data;
 
       if (res.status === 401 || res.status === 403) {
         apiService.removeToken();
-        // Item 66 & 67 Fix: Broadcast auth unauthorized event to clear React user state synchronously
         window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { status: res.status, error: data.error } }));
       }
       throw err;
