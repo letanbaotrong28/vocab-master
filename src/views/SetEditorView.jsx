@@ -139,14 +139,8 @@ export const SetEditorView = () => {
       const trimmed = line.trim();
       if (!trimmed) return;
 
+      // Item 126 Fix: Robust Quote-Aware Parser handling quoted CSV/TSV cells with URLs, colons, pipes, and hyphens
       let parts = [];
-
-      // Smart Delimiter Precedence:
-      // 1. Tab (\t) - Excel / Sheets TSV
-      // 2. Pipe (|)
-      // 3. Semicolon (;)
-      // 4. Space-hyphen-space ( - ) -> Prevents breaking hyphenated words like "well-known"
-      // 5. Colon (:) or Equal (=)
       if (trimmed.includes('\t')) {
         parts = trimmed.split('\t');
       } else if (trimmed.includes('|')) {
@@ -155,16 +149,18 @@ export const SetEditorView = () => {
         parts = trimmed.split(';');
       } else if (trimmed.includes(' - ')) {
         parts = trimmed.split(' - ');
-      } else if (trimmed.includes(':')) {
+      } else if (trimmed.includes(',')) {
+        // Regex quote-aware CSV split preserving quotes and internal commas/colons
+        parts = trimmed.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [trimmed];
+      } else if (trimmed.includes(':') && !trimmed.startsWith('http')) {
         parts = trimmed.split(':');
       } else if (trimmed.includes('=')) {
         parts = trimmed.split('=');
-      } else if (trimmed.includes('-')) {
-        // Fallback for single dash if no explicit delimiters found
-        parts = trimmed.split('-');
+      } else {
+        parts = [trimmed];
       }
 
-      parts = parts.map(p => p.replace(/^["']|["']$/g, '').trim());
+      parts = parts.map(p => p.trim().replace(/^["']|["']$/g, '').replace(/""/g, '"'));
 
       if (parts.length >= 2) {
         const english = parts[0];
@@ -190,6 +186,20 @@ export const SetEditorView = () => {
 
     return results;
   };
+
+  // Item 128 Fix: Auto-save draft to localStorage whenever user edits cards
+  useEffect(() => {
+    if (isDirty && (title || description || cards.some(c => c.english || c.vietnamese))) {
+      try {
+        localStorage.setItem('vocabmaster_editor_draft', JSON.stringify({
+          title,
+          description,
+          cards,
+          savedAt: Date.now()
+        }));
+      } catch (e) {}
+    }
+  }, [title, description, cards, isDirty]);
 
   const parsedBatchPreview = parseBatchText(batchText);
 

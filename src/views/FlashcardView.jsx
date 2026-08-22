@@ -14,20 +14,34 @@ import {
 import { useApp } from '../context/AppContext';
 
 export const FlashcardView = () => {
-  const { currentSet, navigateTo, showToast } = useApp();
+  const { currentSet, navigateTo, showToast, recordWordStats, recordStreak } = useApp();
 
   const [cards, setCards] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [isShuffled, setIsShuffled] = useState(false);
 
+  // Item 110 & 111 Fix: Reset cards and clamp currentIndex when set changes or becomes empty
   useEffect(() => {
-    if (currentSet && currentSet.cards && currentSet.cards.length > 0) {
+    if (currentSet && Array.isArray(currentSet.cards) && currentSet.cards.length > 0) {
       setCards(currentSet.cards);
+      setCurrentIndex(0);
+      setIsFlipped(false);
+    } else {
+      setCards([]);
       setCurrentIndex(0);
       setIsFlipped(false);
     }
   }, [currentSet?.id, currentSet?.updatedAt]);
+
+  // Item 115 Fix: Cancel TTS on component unmount
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   // Flip card handler
   const handleFlip = () => {
@@ -46,7 +60,7 @@ export const FlashcardView = () => {
     setCurrentIndex(prev => (cards.length > 0 ? (prev > 0 ? prev - 1 : cards.length - 1) : 0));
   }, [cards.length]);
 
-  // Shuffle Cards
+  // Item 113 Fix: Fisher-Yates Shuffle Algorithm for uniform distribution
   const handleShuffle = () => {
     setIsFlipped(false);
     if (isShuffled) {
@@ -54,15 +68,37 @@ export const FlashcardView = () => {
       setIsShuffled(false);
       showToast('Đã khôi phục thứ tự ban đầu');
     } else {
-      const shuffled = [...cards].sort(() => Math.random() - 0.5);
-      setCards(shuffled);
+      const arr = [...cards];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      setCards(arr);
       setIsShuffled(true);
-      showToast('Đã xáo trộn danh sách thẻ!', 'info');
+      showToast('Đã xáo trộn danh sách thẻ chuẩn Fisher-Yates!', 'info');
     }
     setCurrentIndex(0);
   };
 
-  // Text-To-Speech (Native Web Speech API with Auto Language Detection)
+  // Item 112 Fix: Mark card as known or still learning
+  const handleMarkCard = async (isCorrect) => {
+    const card = cards[currentIndex];
+    if (!card || !currentSet) return;
+    try {
+      if (recordWordStats) {
+        await recordWordStats(currentSet.id, card.id, isCorrect);
+      }
+      if (recordStreak && isCorrect) {
+        recordStreak();
+      }
+      showToast(isCorrect ? 'Đã ghi nhận: Đã biết!' : 'Đã ghi nhận: Cần học lại', isCorrect ? 'success' : 'info');
+      handleNext();
+    } catch (e) {
+      handleNext();
+    }
+  };
+
+  // Item 115 Fix: Text-To-Speech with Voice Selection
   const speakEnglish = (e, text) => {
     if (e) e.stopPropagation();
     if ('speechSynthesis' in window) {
@@ -71,17 +107,23 @@ export const FlashcardView = () => {
       const isVn = /[àáảãạâầấẩẫậăằắẳẵặèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i.test(text);
       utterance.lang = isVn ? 'vi-VN' : 'en-US';
       utterance.rate = 0.9;
+
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        const matchedVoice = voices.find(v => v.lang.startsWith(utterance.lang));
+        if (matchedVoice) utterance.voice = matchedVoice;
+      }
       window.speechSynthesis.speak(utterance);
     } else {
       showToast('Trình duyệt của bạn không hỗ trợ phát âm thanh.', 'warning');
     }
   };
 
-  // Keyboard Shortcuts (Space/Enter to flip, Left/Right arrows to navigate) - Items 101 & 102 Fixes
+  // Item 114 Fix: Keyboard Shortcuts ignoring input controls
   useEffect(() => {
     const handleKeyDown = (e) => {
       const tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'SELECT' || e.target.isContentEditable) {
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
         return;
       }
 
@@ -253,7 +295,7 @@ export const FlashcardView = () => {
         </div>
       </div>
 
-      {/* Flashcard Navigation Controls */}
+      {/* Flashcard Navigation Controls & Progress Marking (Item 112 UI Fix) */}
       <div className="flashcard-navigation">
         <button 
           className="nav-arrow-btn" 
@@ -263,9 +305,25 @@ export const FlashcardView = () => {
           <ChevronLeft size={28} />
         </button>
 
+        <button 
+          className="btn btn-secondary mark-btn mark-learning"
+          onClick={() => handleMarkCard(false)}
+          title="Đánh dấu cần học lại"
+        >
+          ❌ Cần học lại
+        </button>
+
         <button className="flip-action-btn" onClick={handleFlip}>
           <RotateCw size={18} />
           Lật thẻ
+        </button>
+
+        <button 
+          className="btn btn-primary mark-btn mark-known"
+          onClick={() => handleMarkCard(true)}
+          title="Đánh dấu đã biết từ này"
+        >
+          ✅ Đã biết
         </button>
 
         <button 

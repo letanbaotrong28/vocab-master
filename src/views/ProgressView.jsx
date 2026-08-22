@@ -30,18 +30,17 @@ export const ProgressView = () => {
 
   const cards = currentSet.cards || [];
 
-  // Metrics computation
+  // Metrics computation (Item 123 Fix: Display N/A for unlearned cards with 0 attempts)
   const cardStats = cards.map(c => {
     const correct = c.stats?.correct || 0;
     const wrong = c.stats?.wrong || 0;
     const total = correct + wrong;
-    const accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
+    const accuracy = total > 0 ? Math.round((correct / total) * 100) : null;
     
-    // Item 66 Fix: Mastered classification requires at least 3 correct answers and >= 75% accuracy
     let status = 'new';
     if (total > 0) {
-      if (wrong > correct || (accuracy < 50 && total >= 2)) status = 'weak';
-      else if (accuracy >= 75 && correct >= 3) status = 'mastered';
+      if (wrong > correct || (accuracy !== null && accuracy < 50 && total >= 2)) status = 'weak';
+      else if (accuracy !== null && accuracy >= 75 && correct >= 3) status = 'mastered';
       else status = 'learning';
     }
 
@@ -59,8 +58,7 @@ export const ProgressView = () => {
   const totalCorrect = cardStats.reduce((acc, c) => acc + c.correct, 0);
   const totalWrong = cardStats.reduce((acc, c) => acc + c.wrong, 0);
   
-  // Item 65 Fix: Standard weighted accuracy label
-  const overallAccuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
+  const overallAccuracyDisplay = totalAttempts > 0 ? `${Math.round((totalCorrect / totalAttempts) * 100)}%` : 'N/A';
 
   const weakCount = cardStats.filter(c => c.status === 'weak').length;
   const masteredCount = cardStats.filter(c => c.status === 'mastered').length;
@@ -142,7 +140,7 @@ export const ProgressView = () => {
             <Award size={24} />
           </div>
           <div className="kpi-content">
-            <span className="kpi-value">{overallAccuracy}%</span>
+            <span className="kpi-value">{overallAccuracyDisplay}</span>
             <span className="kpi-label">Tỷ lệ trả lời đúng tổng thể</span>
           </div>
         </div>
@@ -167,14 +165,23 @@ export const ProgressView = () => {
           </div>
         </div>
 
-        {/* Item 68 Fix: Display newCount (Unlearned words count) in KPI grid */}
+        <div className="kpi-card">
+          <div className="kpi-icon-wrapper total">
+            <Sparkles size={24} />
+          </div>
+          <div className="kpi-content">
+            <span className="kpi-value">{cards.length - newCount} / {cards.length}</span>
+            <span className="kpi-label">Thuật ngữ đã bắt đầu học</span>
+          </div>
+        </div>
+
         <div className="kpi-card">
           <div className="kpi-icon-wrapper total">
             <BookOpen size={24} />
           </div>
           <div className="kpi-content">
             <span className="kpi-value">{newCount}</span>
-            <span className="kpi-label">Từ vựng chưa học</span>
+            <span className="kpi-label">Từ vựng chưa từng học</span>
           </div>
         </div>
       </div>

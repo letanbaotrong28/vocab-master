@@ -27,15 +27,27 @@ export const HomeView = () => {
 
   const [visibleCount, setVisibleCount] = useState(20); // Item 113 Fix: Batch rendering for performance
 
-  // Filter sets by search term
+  // Item 107 Fix: Reset visibleCount when searchQuery changes
+  React.useEffect(() => {
+    setVisibleCount(20);
+  }, [searchQuery]);
+
+  // Item 106 Fix: Safe dereferencing of title, description, cards
   const filteredSets = sets.filter(set => {
-    const q = searchQuery.toLowerCase();
+    if (!set || typeof set !== 'object') return false;
+    const q = (searchQuery || '').toLowerCase().trim();
+    if (!q) return true;
+
+    const titleStr = (set.title || '').toString().toLowerCase();
+    const descStr = (set.description || '').toString().toLowerCase();
+    const cardsArr = Array.isArray(set.cards) ? set.cards : [];
+
     return (
-      set.title.toLowerCase().includes(q) ||
-      (set.description && set.description.toLowerCase().includes(q)) ||
-      set.cards.some(c => 
-        c.english.toLowerCase().includes(q) || 
-        c.vietnamese.toLowerCase().includes(q)
+      titleStr.includes(q) ||
+      descStr.includes(q) ||
+      cardsArr.some(c => 
+        (c?.english || '').toString().toLowerCase().includes(q) || 
+        (c?.vietnamese || '').toString().toLowerCase().includes(q)
       )
     );
   });
@@ -68,7 +80,7 @@ export const HomeView = () => {
         </div>
       </section>
 
-      {/* Control Bar: Search & Filter (Item 104 Fix: Connected label and id) */}
+      {/* Control Bar: Search & Filter */}
       <div className="home-control-bar">
         <div className="search-box-wrapper">
           <Search size={20} className="search-icon" />
@@ -99,15 +111,16 @@ export const HomeView = () => {
         </div>
       </div>
 
-      {/* Study Sets Full-Width Vertical List (Item 100 & 103 Fixes) */}
+      {/* Study Sets List */}
       {filteredSets.length > 0 ? (
         <>
           <div className="sets-list">
             {visibleSets.map((set) => {
-              const totalWords = set.cards.length;
-              const studiedWords = set.cards.filter(c => (c.stats?.correct || 0) + (c.stats?.wrong || 0) > 0).length;
-              const totalCorrect = set.cards.reduce((acc, c) => acc + (c.stats?.correct || 0), 0);
-              const totalWrong = set.cards.reduce((acc, c) => acc + (c.stats?.wrong || 0), 0);
+              const cardsArr = Array.isArray(set.cards) ? set.cards : [];
+              const totalWords = cardsArr.length;
+              const studiedWords = cardsArr.filter(c => (c?.stats?.correct || 0) + (c?.stats?.wrong || 0) > 0).length;
+              const totalCorrect = cardsArr.reduce((acc, c) => acc + (c?.stats?.correct || 0), 0);
+              const totalWrong = cardsArr.reduce((acc, c) => acc + (c?.stats?.wrong || 0), 0);
               const totalAttempts = totalCorrect + totalWrong;
               const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
 
@@ -117,25 +130,25 @@ export const HomeView = () => {
                     className="set-item-main" 
                     onClick={() => navigateTo('flashcards', set.id)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
+                      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('set-item-main')) {
                         e.preventDefault();
                         navigateTo('flashcards', set.id);
                       }
                     }}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Mở bộ từ vựng ${set.title}`}
+                    aria-label={`Mở bộ từ vựng ${set.title || ''}`}
                   >
-                    {/* Top Meta Line: Badges & Edit/Delete actions */}
+                    {/* Top Meta Line */}
                     <div className="set-item-top-row">
                       <div className="set-badge-row">
                         <span className="card-count-badge">
                           <Layers size={14} />
-                          {totalWords} thuật ngữ
+                          {studiedWords}/{totalWords} đã học
                         </span>
                         {totalAttempts > 0 && (
-                          <span className={`accuracy-badge ${accuracy >= 70 ? 'high' : 'medium'}`}>
-                            Độ chính xác {accuracy}%
+                          <span className={`accuracy-badge ${accuracy >= 80 ? 'high' : accuracy >= 50 ? 'medium' : 'low'}`}>
+                            Chính xác {accuracy}%
                           </span>
                         )}
                         {set.updatedAt && (
@@ -145,10 +158,15 @@ export const HomeView = () => {
                         )}
                       </div>
 
-                      <div className="set-action-menu" onClick={(e) => e.stopPropagation()}>
+                      {/* Item 108 Fix: Stop event propagation on child buttons */}
+                      <div 
+                        className="set-action-menu" 
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
                         <button 
                           className="action-icon-btn edit" 
-                          onClick={() => navigateTo('edit', set.id)}
+                          onClick={(e) => { e.stopPropagation(); navigateTo('edit', set.id); }}
                           title="Chỉnh sửa bộ từ"
                           aria-label={`Chỉnh sửa bộ từ ${set.title}`}
                         >
@@ -156,7 +174,7 @@ export const HomeView = () => {
                         </button>
                         <button 
                           className="action-icon-btn delete" 
-                          onClick={() => requestDeleteSet(set.id, set.title)}
+                          onClick={(e) => { e.stopPropagation(); requestDeleteSet(set.id, set.title); }}
                           title="Xóa bộ từ"
                           aria-label={`Xóa bộ từ ${set.title}`}
                         >

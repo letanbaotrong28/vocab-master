@@ -106,12 +106,25 @@ export const LearnView = () => {
       else if (modeType === 'ex_vn_to_en') globalPool = allExamples;
       else if (modeType === 'vn_to_en') globalPool = allEnglish;
 
-      // Ensure strictly unique distractors, excluding correct answer
+      // Item 117 & 119 Fix: Ensure strictly unique distractors and GUARANTEE 4 options even for 1-2 card sets!
       const uniqueDistractorsPool = Array.from(new Set([...setDistractors, ...globalPool]))
         .filter(m => m && m.toLowerCase() !== correctAnswer.toLowerCase());
 
       const shuffledDistractors = shuffleArray(uniqueDistractorsPool);
-      const distractors = shuffledDistractors.slice(0, 3);
+      let distractors = shuffledDistractors.slice(0, 3);
+
+      const genericFallbacks = isEnToVn
+        ? ['Không có nghĩa này', 'Đang cập nhật', 'Chưa có thông tin']
+        : ['Undefined', 'Updating', 'Not Available'];
+
+      let fallbackIdx = 0;
+      while (distractors.length < 3) {
+        const fallback = genericFallbacks[fallbackIdx] || `Phương án phụ #${fallbackIdx + 1}`;
+        if (!distractors.includes(fallback) && fallback.toLowerCase() !== correctAnswer.toLowerCase()) {
+          distractors.push(fallback);
+        }
+        fallbackIdx++;
+      }
 
       const options = shuffleArray([correctAnswer, ...distractors]);
 
@@ -146,9 +159,20 @@ export const LearnView = () => {
 
   const currentQ = quizQuestions[currentIndex];
 
-  // Item 56 Fix: Keyboard shortcuts handler (1-4, A-D, Enter, Space)
+  // Item 118 Fix: Handle Esc key navigation and ignore inputs
   useEffect(() => {
     const handleKeyDown = (e) => {
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        navigateTo('home');
+        return;
+      }
+
       if (isFinished || !currentQ) return;
 
       const key = e.key.toUpperCase();
@@ -173,19 +197,15 @@ export const LearnView = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isAnswered, isFinished, currentIndex, currentQ]);
+  }, [isFinished, currentQ, isAnswered, currentIndex]);
 
-  const handleSelectOption = (option) => {
+  // Item 116 Fix: Await recordWordResult to prevent out-of-order stats recording
+  const handleSelectOption = async (option) => {
     if (isAnswered) return;
-
     setSelectedOption(option);
     setIsAnswered(true);
 
     const isCorrect = option && option.toLowerCase().trim() === currentQ.correctAnswer.toLowerCase().trim();
-
-    // Record stats in localStorage & streak
-    recordWordResult(currentSet.id, currentQ.card.id, isCorrect);
-    recordStreak();
 
     // Update session results
     setResults(prev => ({
@@ -201,6 +221,17 @@ export const LearnView = () => {
         }
       ]
     }));
+
+    try {
+      if (recordWordResult && currentSet) {
+        await recordWordResult(currentSet.id, currentQ.card.id, isCorrect);
+      }
+      if (recordStreak && isCorrect) {
+        recordStreak();
+      }
+    } catch (e) {
+      console.error('Error recording word result:', e);
+    }
   };
 
   // Item 63 Fix: Don't know / Skip button
@@ -424,11 +455,54 @@ export const LearnView = () => {
             </div>
           </div>
 
-          <div className="results-actions-group">
+          {/* Item 120 & 121 Fix: History Review Table */}
+          {results.history.length > 0 && (
+            <div className="results-history-section mt-6 text-left">
+              <h3 className="mb-3 font-semibold text-lg">Chi tiết câu hỏi & lịch sử trả lời:</h3>
+              <div className="history-list space-y-2">
+                {results.history.map((h, i) => (
+                  <div key={i} className={`p-3 rounded-lg border flex flex-col md:flex-row justify-between items-start md:items-center gap-2 ${h.isCorrect ? 'bg-success-subtle border-success' : 'bg-danger-subtle border-danger'}`}>
+                    <div>
+                      <span className="font-medium">{i + 1}. {h.question?.promptText || h.promptText}:</span>
+                      <span className="ml-2 text-muted">Đã chọn: <strong className={h.isCorrect ? 'text-success' : 'text-danger'}>{h.selected || h.userAnswer}</strong></span>
+                    </div>
+                    {!h.isCorrect && (
+                      <div className="text-sm text-danger">
+                        Đáp án đúng: <strong>{h.correctAnswer}</strong>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="results-actions-group mt-6">
             <button className="btn btn-secondary" onClick={startQuiz}>
               <RotateCcw size={18} />
               Làm lại bài này
             </button>
+
+            {results.wrong > 0 && (
+              <button 
+                className="btn btn-warning" 
+                onClick={() => {
+                  const wrongCards = results.history.filter(h => !h.isCorrect).map(h => h.question.card);
+                  const qList = generateQuestions().filter(q => wrongCards.some(wc => wc.id === q.card.id));
+                  setQuizQuestions(qList.length > 0 ? qList : generateQuestions());
+                  setCurrentIndex(0);
+                  setSelectedOption(null);
+                  setIsAnswered(false);
+                  setResults({ correct: 0, wrong: 0, history: [] });
+                  setIsFinished(false);
+                  showToast(`Đã chọn ${wrongCards.length} câu làm sai để luyện lại!`, 'info');
+                }}
+              >
+                <BrainCircuit size={18} />
+                Luyện lại {results.wrong} câu sai
+              </button>
+            )}
+
             <button className="btn btn-primary" onClick={() => navigateTo('home')}>
               Quay lại Trang chủ
             </button>
