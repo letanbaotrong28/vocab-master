@@ -88,10 +88,11 @@ app.use('/api/sets/word-stats', rateLimiter(120, 60000));
 app.use('/api/sets/reset-progress', rateLimiter(10, 60000));
 app.use('/api/sets/sync-batch', rateLimiter(20, 60000));
 
-// Item 126 Fix: Structured Request Logging & Request ID Middleware
+// Item 59 Fix: Structured Request Logging & Request ID Response Header
 app.use((req, res, next) => {
   const requestId = Math.random().toString(36).substring(2, 9);
   req.requestId = requestId;
+  res.setHeader('X-Request-ID', requestId);
   const start = Date.now();
 
   res.on('finish', () => {
@@ -123,8 +124,8 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Item 127 & P0 Fix (11, 12): Database Backup Download Endpoint with Admin Authorization & PostgreSQL Check
-app.get('/api/admin/backup', authenticateToken, (req, res) => {
+// Item 58, 127 & P0 Fix (11, 12): Database Backup Download Endpoint with Admin Authorization & PostgreSQL Check
+app.get('/api/admin/backup', authenticateToken, async (req, res) => {
   try {
     if (!req.user.is_admin && req.user.username !== (process.env.ADMIN_USERNAME || 'admin')) {
       return res.status(403).json({ error: 'Bạn không có quyền truy cập endpoint quản trị.' });
@@ -135,8 +136,17 @@ app.get('/api/admin/backup', authenticateToken, (req, res) => {
     }
 
     const dbPath = path.join(__dirname, 'database.db');
+    const backupPath = path.join(__dirname, `vocabmaster_backup_${Date.now()}.db`);
+
     if (fs.existsSync(dbPath)) {
-      res.download(dbPath, `vocabmaster_backup_${Date.now()}.db`);
+      try {
+        await run(`VACUUM INTO ?`, [backupPath]);
+        res.download(backupPath, path.basename(backupPath), () => {
+          if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+        });
+      } catch (vErr) {
+        res.download(dbPath, `vocabmaster_backup_${Date.now()}.db`);
+      }
     } else {
       res.status(404).json({ error: 'Không tìm thấy file CSDL SQLite cục bộ.' });
     }
@@ -149,12 +159,25 @@ app.get('/api/admin/backup', authenticateToken, (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/sets', setsRoutes);
 
+// Item 60 Fix: Standard JSON 404 handler for unmatched API routes
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    error: 'Endpoint API không tồn tại.',
+    code: 'NOT_FOUND',
+    path: req.originalUrl
+  });
+});
+
 // Static serving for production dist build
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
 
+  // Item 61 Fix: Only serve index.html for page routes (return 404 for missing static assets with extensions)
   app.use((req, res, next) => {
     if (req.path.startsWith('/api')) return next();
+    if (path.extname(req.path)) {
+      return res.status(404).send('Static asset not found');
+    }
     res.sendFile(path.join(distPath, 'index.html'), (err) => {
       if (err) next();
     });
