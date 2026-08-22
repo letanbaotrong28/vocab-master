@@ -2,6 +2,13 @@
   command = "npm run build"
   publish = "dist"
 
+# Item 149 Fix: Netlify API Proxy Redirect for SPA production backend
+[[redirects]]
+  from = "/api/*"
+  to = "https://vocabmaster-server.onrender.com/api/:splat"
+  status = 200
+  force = true
+
 # Redirects for React Single Page Application (SPA) routing
 [[redirects]]
   from = "/*"

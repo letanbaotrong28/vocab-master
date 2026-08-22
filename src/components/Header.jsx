@@ -25,12 +25,22 @@ export const Header = () => {
     navigateTo(view);
   };
 
+  const handleLogoutClick = () => {
+    if (window.confirm('Bạn có chắc chắn muốn đăng xuất tài khoản?')) {
+      logoutUser();
+    }
+  };
+
   return (
     <>
       <header className="main-header">
         <div className="header-container container">
-          {/* Brand Logo */}
-          <div className="header-brand" onClick={() => safeNavigate('home')}>
+          {/* Item 145 Fix: Brand Logo as accessible button */}
+          <button 
+            className="header-brand" 
+            onClick={() => safeNavigate('home')}
+            aria-label="VocabMaster - Trang chủ"
+          >
             <div className="brand-logo-icon">
               <BookOpen size={24} color="#ffffff" />
             </div>
@@ -38,7 +48,7 @@ export const Header = () => {
               <span className="brand-title">VocabMaster</span>
               <span className="brand-tagline hide-mobile">Quizlet Edition</span>
             </div>
-          </div>
+          </button>
 
           {/* Navigation Links */}
           <nav className="header-nav hide-mobile">

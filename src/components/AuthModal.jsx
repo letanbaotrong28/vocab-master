@@ -13,6 +13,13 @@ export const AuthModal = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  React.useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, []);
+
   if (!isAuthModalOpen) return null;
 
   // Item 31 & 32 Fix: Reset form & showPassword state on close or switch
@@ -84,7 +91,13 @@ export const AuthModal = () => {
   };
 
   return (
-    <div className="modal-backdrop" onClick={handleClose}>
+    <div 
+      className="modal-backdrop" 
+      onClick={handleClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="auth-modal-title"
+    >
       <div className="modal-content animate-scale-up auth-modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-title-group">
@@ -92,12 +105,12 @@ export const AuthModal = () => {
               <ShieldCheck size={22} />
             </div>
             <div>
-              <h3 className="modal-title">
+              <h3 id="auth-modal-title" className="modal-title">
                 {mode === 'login' ? 'Đăng Nhập Tài Khoản' : 'Tạo Tài Khoản Mới'}
               </h3>
             </div>
           </div>
-          <button className="btn-icon" onClick={handleClose} disabled={loading}>
+          <button className="btn-icon" onClick={handleClose} disabled={loading} aria-label="Đóng bảng đăng nhập">
             <X size={20} />
           </button>
         </div>
@@ -126,7 +139,7 @@ export const AuthModal = () => {
 
         <div className="modal-body">
           {error && (
-            <div className="error-alert mb-3">
+            <div className="error-alert mb-3" role="alert">
               <AlertCircle size={16} />
               <span>{error}</span>
             </div>
@@ -134,39 +147,43 @@ export const AuthModal = () => {
 
           <form onSubmit={handleSubmit} className="auth-form">
             <div className="form-group">
-              <label className="form-label">Tên tài khoản</label>
+              <label htmlFor="auth-username" className="form-label">Tên tài khoản</label>
               <div className="input-icon-wrapper">
                 <User size={18} className="input-icon" />
                 <input
+                  id="auth-username"
                   type="text"
                   className="form-input with-icon"
                   placeholder="Nhập tên đăng nhập..."
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   disabled={loading}
+                  autoComplete="username"
                   autoFocus
                 />
               </div>
             </div>
 
             <div className="form-group">
-              <label className="form-label">Mật khẩu</label>
+              <label htmlFor="auth-password" className="form-label">Mật khẩu</label>
               <div className="input-icon-wrapper">
                 <Lock size={18} className="input-icon" />
                 <input
+                  id="auth-password"
                   type={showPassword ? 'text' : 'password'}
                   className="form-input with-icon"
                   placeholder="Nhập mật khẩu..."
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={loading}
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                 />
                 <button
                   type="button"
                   className="password-toggle-btn"
                   onClick={() => setShowPassword(!showPassword)}
                   disabled={loading}
-                  tabIndex={-1}
+                  aria-label={showPassword ? "Ẩn mật khẩu" : "Hiển thị mật khẩu"}
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
