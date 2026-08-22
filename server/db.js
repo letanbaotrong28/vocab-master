@@ -10,13 +10,22 @@ export const isPg = Boolean(process.env.DATABASE_URL);
 let sqliteDb = null;
 let pgPool = null;
 
-// Item 19 Fix: Parse PostgreSQL BIGINT (INT8 / OID 20) timestamps directly into JS Numbers
+// Item 19, 56 & 63 Fix: Parse PostgreSQL BIGINT, Pool timeouts & error events
 if (isPg) {
   pg.types.setTypeParser(20, (val) => (val ? parseInt(val, 10) : null));
   console.log('Connecting to Cloud PostgreSQL database...');
   pgPool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: process.env.PGSSLMODE === 'disable' ? false : {
+      rejectUnauthorized: process.env.NODE_ENV === 'production' && process.env.PGSSL_STRICT === 'true'
+    },
+    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 30000,
+    max: 20
+  });
+
+  pgPool.on('error', (err) => {
+    console.error('Unexpected idle client error in PostgreSQL Pool:', err.message);
   });
 }
 
@@ -331,10 +340,19 @@ export const initDb = async () => {
     }
   }
 
-  // Essential Database Indexes
+  // Essential & Composite Database Indexes (Item 52 Fix)
   await run(`CREATE INDEX IF NOT EXISTS idx_vocab_sets_user ON vocab_sets(user_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_cards_set ON cards(set_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_cards_set_pos ON cards(set_id, position)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_card_progress_user_set ON card_progress(user_id, set_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_card_progress_composite ON card_progress(user_id, set_id, card_id)`);
+
+  // Automatic Orphan Progress Cleanup on Startup (Item 52 Fix)
+  try {
+    await run(`DELETE FROM card_progress WHERE card_id NOT IN (SELECT id FROM cards)`);
+  } catch (cleanErr) {
+    console.warn('Orphan cleanup warning:', cleanErr.message);
+  }
 
   // Record migration version 1 with standard SQL UPSERT
   if (isPg) {

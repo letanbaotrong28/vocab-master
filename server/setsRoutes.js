@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 import { query, getOne, run, withTransaction } from './db.js';
 import { authenticateToken } from './authMiddleware.js';
 
@@ -7,10 +8,11 @@ const router = express.Router();
 // Apply auth middleware to all set routes
 router.use(authenticateToken);
 
-// Helper to make set ID unique per user
+// Item 53 & 54 Fix: Cryptographic UUIDs & strict Set ID sanitization
 const getUserSetId = (userId, rawId) => {
-  if (!rawId) return `${userId}_set_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  return String(rawId).startsWith(`${userId}_`) ? String(rawId) : `${userId}_${rawId}`;
+  if (!rawId) return `${userId}_set_${crypto.randomUUID()}`;
+  const sanitized = String(rawId).replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 100);
+  return sanitized.startsWith(`${userId}_`) ? sanitized : `${userId}_${sanitized}`;
 };
 
 // Item 31-34 Fix: Robust backend input validator & length boundaries
