@@ -206,8 +206,10 @@ export const AppProvider = ({ children }) => {
       }
       showToast('Đã lưu bộ từ vựng thành công!', 'success');
       navigateTo('home');
+      return true;
     } catch (err) {
       showToast(err.message || 'Lỗi khi lưu bộ từ vựng.', 'warning');
+      throw err;
     }
   };
 
@@ -336,6 +338,7 @@ export const AppProvider = ({ children }) => {
     theme,
     toggleTheme,
     streak,
+    recordStreak,
     user,
     isAuthLoading,
     isAuthModalOpen,

@@ -6,7 +6,7 @@ import helmet from 'helmet';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initDb } from './db.js';
+import { initDb, closeDb, getOne } from './db.js';
 import authRoutes from './authRoutes.js';
 import setsRoutes from './setsRoutes.js';
 import { authenticateToken } from './authMiddleware.js';
@@ -36,20 +36,57 @@ app.use(helmet({
 
 app.use(cookieParser());
 
-// CORS with whitelist
+// CORS with whitelist (Item 13 Fix)
 app.use(cors({
   credentials: true,
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(null, true);
+      callback(new Error('Not allowed by CORS'));
     }
   }
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// Item 29 Fix: CSRF Validation Header Check for Mutating API Endpoints
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && req.path.startsWith('/api/')) {
+    const hasHeader = req.headers['authorization'] || req.headers['content-type'] || req.headers['x-requested-with'];
+    if (!hasHeader) {
+      return res.status(403).json({ error: 'Yêu cầu bị từ chối do thiếu CSRF Validation Header.' });
+    }
+  }
+  next();
+});
+
+// Item 30 Fix: Simple In-Memory Rate Limiter for Mutating Endpoints
+const rateLimitMap = new Map();
+const rateLimiter = (maxRequests = 100, windowMs = 60000) => (req, res, next) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
+  const now = Date.now();
+  const record = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs };
+
+  if (now > record.resetTime) {
+    record.count = 1;
+    record.resetTime = now + windowMs;
+  } else {
+    record.count += 1;
+  }
+
+  rateLimitMap.set(ip, record);
+
+  if (record.count > maxRequests) {
+    return res.status(429).json({ error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau 1 phút.' });
+  }
+  next();
+};
+
+app.use('/api/sets/word-stats', rateLimiter(120, 60000));
+app.use('/api/sets/reset-progress', rateLimiter(10, 60000));
+app.use('/api/sets/sync-batch', rateLimiter(20, 60000));
 
 // Item 126 Fix: Structured Request Logging & Request ID Middleware
 app.use((req, res, next) => {
@@ -65,23 +102,46 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'VocabMaster Backend',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+// Item 28 Fix: Health Check with Active Database Ping
+app.get('/api/health', async (req, res) => {
+  try {
+    await getOne('SELECT 1 as alive');
+    res.json({
+      status: 'ok',
+      db: 'connected',
+      service: 'VocabMaster Backend',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: 'error',
+      db: 'disconnected',
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
-// Item 127 Fix: Database Backup Download Endpoint
+// Item 127 & P0 Fix (11, 12): Database Backup Download Endpoint with Admin Authorization & PostgreSQL Check
 app.get('/api/admin/backup', authenticateToken, (req, res) => {
-  const dbPath = path.join(__dirname, 'database.db');
-  if (fs.existsSync(dbPath)) {
-    res.download(dbPath, `vocabmaster_backup_${Date.now()}.db`);
-  } else {
-    res.status(404).json({ error: 'Không tìm thấy file CSDL SQLite cục bộ (Đang dùng Cloud PostgreSQL).' });
+  try {
+    if (!req.user.is_admin && req.user.username !== (process.env.ADMIN_USERNAME || 'admin')) {
+      return res.status(403).json({ error: 'Bạn không có quyền truy cập endpoint quản trị.' });
+    }
+
+    if (process.env.DATABASE_URL) {
+      return res.status(400).json({ error: 'Tính năng backup file SQLite không khả dụng khi đang sử dụng Cloud PostgreSQL.' });
+    }
+
+    const dbPath = path.join(__dirname, 'database.db');
+    if (fs.existsSync(dbPath)) {
+      res.download(dbPath, `vocabmaster_backup_${Date.now()}.db`);
+    } else {
+      res.status(404).json({ error: 'Không tìm thấy file CSDL SQLite cục bộ.' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Lỗi máy chủ khi xuất file backup.' });
   }
 });
 
@@ -122,7 +182,7 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-// Init DB and start server with Graceful Shutdown (Item 128 Fix)
+// Init DB and start server with Graceful Shutdown (Item 25, 26, 27 Fix)
 let server = null;
 
 initDb()
@@ -133,10 +193,17 @@ initDb()
   })
   .catch((err) => {
     console.error('❌ Failed to initialize database:', err);
+    process.exit(1); // Item 25 Fix: Clean process exit on DB init failure
   });
 
-const gracefulShutdown = (signal) => {
+const gracefulShutdown = async (signal) => {
   console.log(`Received ${signal}. Shutting down server gracefully...`);
+  try {
+    await closeDb(); // Item 26 & 27 Fix: Unified DB pool drain / close
+  } catch (e) {
+    console.error('Error closing DB:', e.message);
+  }
+
   if (server) {
     server.close(() => {
       console.log('HTTP Server closed cleanly.');
