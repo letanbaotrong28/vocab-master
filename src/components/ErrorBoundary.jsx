@@ -15,9 +15,30 @@ export class ErrorBoundary extends React.Component {
     console.error('ErrorBoundary caught rendering error:', error, errorInfo);
   }
 
+  componentDidMount() {
+    this.handleUnhandledRejection = (e) => {
+      console.error('Unhandled Promise Rejection caught in ErrorBoundary:', e.reason);
+    };
+    window.addEventListener('unhandledrejection', this.handleUnhandledRejection);
+  }
+
+  componentWillUnmount() {
+    if (this.handleUnhandledRejection) {
+      window.removeEventListener('unhandledrejection', this.handleUnhandledRejection);
+    }
+  }
+
+  // Item 130 Fix: Selectively clear ONLY app-specific keys instead of destructive localStorage.clear()
   handleResetApp = () => {
     try {
-      localStorage.clear();
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('vocabmaster_') || key.startsWith('quizlet_'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
     } catch (e) {}
     window.location.reload();
   };

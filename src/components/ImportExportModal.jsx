@@ -77,7 +77,12 @@ export const ImportExportModal = () => {
     setImportError('');
     if (!file) return;
 
-    // Item 27 Fix: Case-insensitive file extension check (.JSON vs .json)
+    // Item 129 Fix: Max 5MB file size limit
+    if (file.size > 5 * 1024 * 1024) {
+      setImportError('Dung lượng tệp vượt quá giới hạn 5MB cho phép.');
+      return;
+    }
+
     if (!file.name.toLowerCase().endsWith('.json')) {
       setImportError('Vui lòng chọn tệp có định dạng .json');
       return;
@@ -85,7 +90,6 @@ export const ImportExportModal = () => {
 
     const reader = new FileReader();
 
-    // Item 28 Fix: Handle FileReader onerror event explicitly
     reader.onerror = () => {
       setIsImporting(false);
       setImportError('Không thể đọc tệp từ thiết bị. Tệp có thể bị lỗi hoặc bị khóa.');
@@ -111,6 +115,7 @@ export const ImportExportModal = () => {
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     processFile(file);
+    e.target.value = ''; // Item 129 Fix: Reset file input so re-selecting same file triggers onChange
   };
 
   const handleDrop = (e) => {
