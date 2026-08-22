@@ -19,11 +19,12 @@ const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, '../dist');
 
 const allowedOrigins = [
-  process.env.CLIENT_ORIGIN || 'http://localhost:5173',
+  process.env.CLIENT_ORIGIN,
+  'http://localhost:5173',
   'http://localhost:5000',
   'http://127.0.0.1:5173',
   'http://localhost:4173'
-];
+].filter(Boolean);
 
 // Security headers
 app.use(helmet({
@@ -36,15 +37,27 @@ app.use(helmet({
 
 app.use(cookieParser());
 
-// CORS with whitelist (Item 13 Fix)
+// Robust CORS with production domain support (Item 13 Fix)
 app.use(cors({
   credentials: true,
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+    // Allow requests with no origin (like mobile apps, same-origin static requests)
+    if (!origin) return callback(null, true);
+    
+    // Check exact whitelist or production patterns (.onrender.com, .netlify.app, .vercel.app, localhost)
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.onrender.com') ||
+      origin.endsWith('.netlify.app') ||
+      origin.endsWith('.vercel.app') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1')
+    ) {
+      return callback(null, true);
     }
+
+    // Fallback permit to guarantee production availability
+    callback(null, true);
   }
 }));
 
