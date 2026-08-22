@@ -171,7 +171,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/sets', setsRoutes);
 
 // Item 60 Fix: Standard JSON 404 handler for unmatched API routes
-app.use('/api/*', (req, res) => {
+app.use('/api', (req, res) => {
   res.status(404).json({
     error: 'Endpoint API không tồn tại.',
     code: 'NOT_FOUND',
