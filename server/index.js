@@ -62,8 +62,19 @@ app.use((req, res, next) => {
   next();
 });
 
-// Item 30 Fix: Simple In-Memory Rate Limiter for Mutating Endpoints
+app.set('trust proxy', 1); // Item 80 Fix: Trust reverse proxy IP headers (Render/Cloudflare)
+
+// Item 80 Fix: Memory Pruning Timer for Rate Limiter Map
 const rateLimitMap = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now > record.resetTime) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 10 * 60 * 1000);
+
 const rateLimiter = (maxRequests = 100, windowMs = 60000) => (req, res, next) => {
   const ip = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
   const now = Date.now();
