@@ -65,6 +65,7 @@
 
   /* Ultra-Crisp, Bright Solid Text for Dark Mode */
   --text-main: #ffffff;
+  --text-primary: #ffffff; /* Item 136 Fix: Override --text-primary on dark theme */
   --text-muted: #cbd5e1;
 
   --border-color: #2b3a5b;
@@ -3318,5 +3319,79 @@ code {
   .user-profile-badge {
     padding: 0.25rem 0.4rem;
     gap: 0.3rem;
+  }
+}
+
+/* ==========================================================================
+   ITEMS 131 - 144: CSS ALIASES, UTILITIES, ACCESSIBILITY & ANIMATION RESETS
+   ========================================================================== */
+
+/* Item 137 Fix: Screen Reader Only Utility Class */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border-width: 0 !important;
+}
+
+/* Item 134 Fix: Key Utility Classes */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.gap-2 { gap: 0.5rem; }
+.gap-3 { gap: 0.75rem; }
+.w-full { width: 100%; }
+.mt-2 { margin-top: 0.5rem; }
+.mt-3 { margin-top: 0.75rem; }
+.mt-4 { margin-top: 1rem; }
+.mt-6 { margin-top: 1.5rem; }
+.mb-2 { margin-bottom: 0.5rem; }
+.mb-3 { margin-bottom: 0.75rem; }
+.mb-4 { margin-bottom: 1rem; }
+.ml-auto { margin-left: auto; }
+.text-left { text-align: left; }
+.font-medium { font-weight: 500; }
+.font-semibold { font-weight: 600; }
+.text-lg { font-size: 1.125rem; }
+.text-sm { font-size: 0.875rem; }
+
+.bg-success-subtle { background-color: var(--success-bg, rgba(16, 185, 129, 0.15)); }
+.bg-danger-subtle { background-color: var(--danger-bg, rgba(239, 68, 68, 0.15)); }
+.border-success { border-color: var(--success, #10b981) !important; }
+.border-danger { border-color: var(--danger, #ef4444) !important; }
+
+/* Item 131 & 132 & 133 & 135 Fix: CSS Aliases for Quiz & Typing views */
+.options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.85rem; width: 100%; margin-top: 1rem; }
+.option-btn { display: flex; align-items: center; gap: 0.75rem; padding: 1rem 1.25rem; background: var(--bg-card); border: 2px solid var(--border-color); border-radius: var(--radius-md); color: var(--text-main); font-weight: 500; cursor: pointer; transition: all var(--transition-fast); text-align: left; }
+.option-btn:hover:not(:disabled) { border-color: var(--primary); background: var(--primary-light); transform: translateY(-2px); }
+.option-btn.correct-answer { border-color: var(--success); background: var(--success-bg); color: var(--success-border); }
+.option-btn.wrong-answer { border-color: var(--danger); background: var(--danger-bg); color: var(--danger-border); }
+.option-badge { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: var(--bg-subtle); border-radius: var(--radius-sm); font-weight: 700; font-size: 0.85rem; color: var(--text-muted); flex-shrink: 0; }
+
+.typing-prompt-box { text-align: center; padding: 2rem 1.5rem; background: var(--bg-subtle); border-radius: var(--radius-md); margin-bottom: 1.5rem; }
+.typing-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 1.25rem; gap: 1rem; }
+.answer-feedback-banner { display: flex; align-items: center; gap: 1rem; padding: 1rem 1.25rem; border-radius: var(--radius-md); margin-top: 1rem; }
+.answer-feedback-banner.correct { background: var(--success-bg); border: 1px solid var(--success); color: var(--text-main); }
+.answer-feedback-banner.wrong { background: var(--danger-bg); border: 1px solid var(--danger); color: var(--text-main); }
+
+/* Item 141 Fix: Keyboard Focus-Visible & Reduced Motion Accessibility */
+:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

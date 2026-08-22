@@ -228,4 +228,21 @@ router.post('/logout', authenticateToken, async (req, res) => {
   }
 });
 
+// Item 150 Fix: Complete Account & Data Deletion Endpoint
+router.delete('/account', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await run('DELETE FROM card_progress WHERE user_id = ?', [userId]);
+    await run('DELETE FROM cards WHERE set_id IN (SELECT id FROM vocab_sets WHERE user_id = ?)', [userId]);
+    await run('DELETE FROM vocab_sets WHERE user_id = ?', [userId]);
+    await run('DELETE FROM users WHERE id = ?', [userId]);
+
+    res.clearCookie('token');
+    return res.json({ message: 'Đã xóa toàn bộ tài khoản và dữ liệu cá nhân thành công.' });
+  } catch (err) {
+    console.error('Delete account error:', err);
+    return res.status(500).json({ error: 'Lỗi máy chủ khi xóa tài khoản.' });
+  }
+});
+
 export default router;

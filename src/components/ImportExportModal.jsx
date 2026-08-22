@@ -125,8 +125,23 @@ export const ImportExportModal = () => {
     processFile(file);
   };
 
+  React.useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, []);
+
+  if (!isImportExportOpen) return null;
+
   return (
-    <div className="modal-backdrop" onClick={() => !isImporting && setIsImportExportOpen(false)}>
+    <div 
+      className="modal-backdrop" 
+      onClick={() => !isImporting && setIsImportExportOpen(false)}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="import-modal-title"
+    >
       <div className="modal-content animate-scale-up modal-lg" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-title-group">
@@ -134,7 +149,7 @@ export const ImportExportModal = () => {
               <HardDriveDownload size={22} />
             </div>
             <div>
-              <h3 className="modal-title">Sao Lưu & Khôi Phục Dữ Liệu</h3>
+              <h3 id="import-modal-title" className="modal-title">Sao Lưu & Khôi Phục Dữ Liệu</h3>
               <p className="modal-subtitle">Xuất hoặc nhập dữ liệu bộ từ vựng dạng tệp JSON</p>
             </div>
           </div>
