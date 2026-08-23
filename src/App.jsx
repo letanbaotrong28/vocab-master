@@ -19,7 +19,7 @@ const TypingView = lazy(() => import('./views/TypingView').then(m => ({ default:
 const ProgressView = lazy(() => import('./views/ProgressView').then(m => ({ default: m.ProgressView })));
 
 const ViewFallback = () => (
-  <div className="container p-8 text-center" style={{ padding: '4rem 1rem' }}>
+  <div className="view-loading-shell container text-center" role="status" aria-live="polite">
     <div className="spinner mb-3" style={{ margin: '0 auto' }}></div>
     <p className="text-muted text-sm">Đang tải màn hình học bài...</p>
   </div>

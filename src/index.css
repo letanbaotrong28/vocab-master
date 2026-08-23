@@ -101,6 +101,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+html,
+#root {
+  min-height: 100%;
+  background-color: var(--bg-app);
+}
+
 button,
 input,
 select,
@@ -3504,6 +3510,13 @@ code {
 .main-body { flex: 1; }
 
 .auth-splash-screen { background: var(--bg-app); }
+
+.view-loading-shell {
+  min-height: 18rem;
+  padding: 4rem 1rem;
+  color: var(--text-main);
+  background: transparent;
+}
 
 .app-logo-badge {
   width: 72px;
