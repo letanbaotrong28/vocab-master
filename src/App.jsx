@@ -8,15 +8,16 @@ import { ImportExportModal } from './components/ImportExportModal';
 import { AuthModal } from './components/AuthModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { BookOpen } from 'lucide-react';
+import { loadViewModule, preloadInteractiveViews } from './services/viewLoader';
 
 import { HomeView } from './views/HomeView';
 
 // Item 116 Fix: Code splitting & Lazy Loading for heavy views
-const SetEditorView = lazy(() => import('./views/SetEditorView').then(m => ({ default: m.SetEditorView })));
-const FlashcardView = lazy(() => import('./views/FlashcardView').then(m => ({ default: m.FlashcardView })));
-const LearnView = lazy(() => import('./views/LearnView').then(m => ({ default: m.LearnView })));
-const TypingView = lazy(() => import('./views/TypingView').then(m => ({ default: m.TypingView })));
-const ProgressView = lazy(() => import('./views/ProgressView').then(m => ({ default: m.ProgressView })));
+const SetEditorView = lazy(() => loadViewModule('create').then(m => ({ default: m.SetEditorView })));
+const FlashcardView = lazy(() => loadViewModule('flashcards').then(m => ({ default: m.FlashcardView })));
+const LearnView = lazy(() => loadViewModule('learn').then(m => ({ default: m.LearnView })));
+const TypingView = lazy(() => loadViewModule('typing').then(m => ({ default: m.TypingView })));
+const ProgressView = lazy(() => loadViewModule('progress').then(m => ({ default: m.ProgressView })));
 
 const ViewFallback = () => (
   <div className="container p-8 text-center" style={{ padding: '4rem 1rem' }}>
@@ -37,6 +38,16 @@ const MainContent = () => {
     });
     return () => window.cancelAnimationFrame(animationFrame);
   }, [activeView, currentSetId, isAuthLoading]);
+
+  React.useEffect(() => {
+    if (isAuthLoading) return undefined;
+    // Begin fetching every interactive screen immediately after the first
+    // usable paint. Switching study modes then reuses modules already in RAM.
+    const timer = window.setTimeout(() => {
+      preloadInteractiveViews();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isAuthLoading]);
 
   // Item 110 Fix: Loading Splash Screen during initial Auth Check
   if (isAuthLoading) {

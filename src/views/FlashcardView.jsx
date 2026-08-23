@@ -35,9 +35,9 @@ export const FlashcardView = () => {
   }, []);
 
   // Flip card handler
-  const handleFlip = () => {
+  const handleFlip = useCallback(() => {
     setIsFlipped(prev => !prev);
-  };
+  }, []);
 
   // Next card
   const handleNext = useCallback(() => {
@@ -133,7 +133,7 @@ export const FlashcardView = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleNext, handlePrev]);
+  }, [handleFlip, handleNext, handlePrev]);
 
   if (!currentSet || !cards.length) {
     return (
@@ -232,8 +232,11 @@ export const FlashcardView = () => {
         </p>
         <div 
           className={`flashcard-3d ${isFlipped ? 'flipped' : ''}`}
+          onClick={handleFlip}
           role="group"
-          aria-label={`Thẻ ${currentIndex + 1} trên ${cards.length}`}
+          tabIndex={0}
+          title="Bấm vào thẻ để lật"
+          aria-label={`Thẻ ${currentIndex + 1} trên ${cards.length}. Bấm hoặc nhấn Space để lật thẻ.`}
         >
           {/* Front Face: English Word & English Example */}
           <article className="card-face card-front" aria-hidden={isFlipped} inert={isFlipped}>
