@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
-export const ProgressView = () => {
+export const ProgressView = ({ embedded = false } = {}) => {
   const { currentSet, navigateTo, requestResetProgress } = useApp();
   const [filterMode, setFilterMode] = useState('all'); // 'all' | 'new' | 'weak' | 'mastered'
 
@@ -93,7 +93,7 @@ export const ProgressView = () => {
   };
 
   return (
-    <div className="progress-view container">
+    <div className={embedded ? 'study-mode-content' : 'progress-view container'}>
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>

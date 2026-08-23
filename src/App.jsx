@@ -8,13 +8,12 @@ import { ImportExportModal } from './components/ImportExportModal';
 import { AuthModal } from './components/AuthModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { BookOpen } from 'lucide-react';
+import { StudyWorkspace } from './components/StudyWorkspace';
 
 import { HomeView } from './views/HomeView';
 import { SetEditorView } from './views/SetEditorView';
-import { FlashcardView } from './views/FlashcardView';
-import { LearnView } from './views/LearnView';
-import { TypingView } from './views/TypingView';
-import { ProgressView } from './views/ProgressView';
+
+const STUDY_VIEWS = new Set(['flashcards', 'learn', 'typing', 'progress']);
 
 const MainContent = () => {
   const { activeView, currentSetId, toast, confirmModal, setConfirmModal, isAuthLoading } = useApp();
@@ -49,10 +48,9 @@ const MainContent = () => {
       <main ref={mainContentRef} className="main-body" tabIndex={-1} aria-label="Nội dung chính">
         {activeView === 'home' && <HomeView />}
         {(activeView === 'create' || activeView === 'edit') && <SetEditorView />}
-        {activeView === 'flashcards' && <FlashcardView key={currentSetId || 'no-set'} />}
-        {activeView === 'learn' && <LearnView key={currentSetId || 'no-set'} />}
-        {activeView === 'typing' && <TypingView key={currentSetId || 'no-set'} />}
-        {activeView === 'progress' && <ProgressView key={currentSetId || 'no-set'} />}
+        {STUDY_VIEWS.has(activeView) && (
+          <StudyWorkspace key={currentSetId || 'no-set'} activeView={activeView} />
+        )}
       </main>
 
       {/* Toast Notifications */}

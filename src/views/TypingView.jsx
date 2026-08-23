@@ -27,10 +27,12 @@ const shuffleArray = (array) => {
   return arr;
 };
 
-export const TypingView = () => {
+export const TypingView = ({ embedded = false, direction: controlledDirection, onDirectionChange } = {}) => {
   const { currentSet, navigateTo, recordWordResult, showToast } = useApp();
 
-  const [direction, setDirection] = useState('vn_to_en');
+  const [localDirection, setLocalDirection] = useState('vn_to_en');
+  const direction = controlledDirection ?? localDirection;
+  const setDirection = onDirectionChange ?? setLocalDirection;
   const [cards, setCards] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputWord, setInputWord] = useState('');
@@ -294,7 +296,7 @@ export const TypingView = () => {
 
   if (!cards || cards.length === 0) {
     return (
-      <div className="study-view container text-center p-8">
+      <div className={embedded ? 'study-mode-content text-center p-8' : 'study-view container text-center p-8'}>
         <div style={{ padding: '4rem 0' }}>
           <div className="spinner mb-3"></div>
           <p className="text-muted">Đang khởi tạo bài học gõ từ...</p>
@@ -304,7 +306,7 @@ export const TypingView = () => {
   }
 
   return (
-    <div className="study-view typing-view container">
+    <div className={embedded ? 'study-mode-content' : 'study-view typing-view container'}>
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>
