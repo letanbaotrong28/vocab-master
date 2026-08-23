@@ -1,6 +1,6 @@
 import express from 'express';
 import crypto from 'crypto';
-import { query, getOne, run, withTransaction } from './db.js';
+import { query, withTransaction } from './db.js';
 import { authenticateToken } from './authMiddleware.js';
 
 const router = express.Router();
@@ -11,7 +11,7 @@ router.use(authenticateToken);
 // Item 53 & 54 Fix: Cryptographic UUIDs & strict Set ID sanitization
 const getUserSetId = (userId, rawId) => {
   if (!rawId) return `${userId}_set_${crypto.randomUUID()}`;
-  const sanitized = String(rawId).replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 100);
+  const sanitized = String(rawId).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 100);
   return sanitized.startsWith(`${userId}_`) ? sanitized : `${userId}_${sanitized}`;
 };
 
@@ -23,7 +23,10 @@ const validateSetInput = (title, description, cards) => {
   if (title.trim().length > 250) {
     return 'Tên bộ từ vựng không được vượt quá 250 ký tự.';
   }
-  if (description && (typeof description !== 'string' || description.length > 1000)) {
+  if (description !== undefined && description !== null && typeof description !== 'string') {
+    return 'Mô tả bộ từ vựng phải là chuỗi ký tự.';
+  }
+  if (typeof description === 'string' && description.length > 1000) {
     return 'Mô tả bộ từ vựng không được vượt quá 1000 ký tự.';
   }
   if (!Array.isArray(cards) || cards.length === 0) {
@@ -38,7 +41,10 @@ const validateSetInput = (title, description, cards) => {
     if (typeof c.english !== 'string' || !c.english.trim()) return `Thẻ số ${i + 1} thiếu từ tiếng Anh.`;
     if (typeof c.vietnamese !== 'string' || !c.vietnamese.trim()) return `Thẻ số ${i + 1} thiếu nghĩa tiếng Việt.`;
     if (c.english.trim().length > 500 || c.vietnamese.trim().length > 500) return `Từ vựng ở thẻ số ${i + 1} vượt quá 500 ký tự.`;
-    if (c.example && (typeof c.example !== 'string' || c.example.length > 1000)) return `Ví dụ ở thẻ số ${i + 1} vượt quá 1000 ký tự.`;
+    if (c.example !== undefined && c.example !== null && typeof c.example !== 'string') return `Ví dụ ở thẻ số ${i + 1} phải là chuỗi ký tự.`;
+    if (typeof c.example === 'string' && c.example.length > 1000) return `Ví dụ ở thẻ số ${i + 1} vượt quá 1000 ký tự.`;
+    if (c.exampleTranslation !== undefined && c.exampleTranslation !== null && typeof c.exampleTranslation !== 'string') return `Bản dịch ví dụ ở thẻ số ${i + 1} phải là chuỗi ký tự.`;
+    if (typeof c.exampleTranslation === 'string' && c.exampleTranslation.length > 1000) return `Bản dịch ví dụ ở thẻ số ${i + 1} vượt quá 1000 ký tự.`;
   }
   return null;
 };
@@ -133,7 +139,7 @@ router.post('/', async (req, res) => {
 
       for (let i = 0; i < validCards.length; i++) {
         const c = validCards[i];
-        const rawCardId = String(c.id || `card_${i}`).replace(/[\/\?#]/g, '_').trim();
+        const rawCardId = String(c.id || `card_${i}`).replace(/[/?#]/g, '_').trim();
         const cardId = rawCardId.startsWith(`${setObjId}_`) ? rawCardId : `${setObjId}_${rawCardId}`;
         cardIdSet.add(cardId);
 
@@ -199,11 +205,23 @@ router.post('/sync-batch', async (req, res) => {
     if (!Array.isArray(sets)) {
       return res.status(400).json({ error: 'Danh sách bộ từ không hợp lệ.' });
     }
+    if (sets.length === 0 || sets.length > 200) {
+      return res.status(400).json({ error: 'Mỗi lần đồng bộ phải có từ 1 đến 200 bộ từ vựng.' });
+    }
+
+    for (let i = 0; i < sets.length; i++) {
+      const setItem = sets[i];
+      if (!setItem || typeof setItem !== 'object') {
+        return res.status(400).json({ error: `Bộ từ số ${i + 1} không hợp lệ.` });
+      }
+      const validationErr = validateSetInput(setItem.title, setItem.description, setItem.cards);
+      if (validationErr) {
+        return res.status(400).json({ error: `Bộ từ số ${i + 1}: ${validationErr}` });
+      }
+    }
 
     await withTransaction(async (tx) => {
       for (const setItem of sets) {
-        if (!setItem || typeof setItem !== 'object' || typeof setItem.title !== 'string' || !setItem.title.trim()) continue;
-
         const setObjId = getUserSetId(userId, setItem.id);
         const createdTime = typeof setItem.createdAt === 'number' ? setItem.createdAt : parseInt(setItem.createdAt, 10) || Date.now();
         const now = Date.now();
@@ -226,8 +244,7 @@ router.post('/sync-batch', async (req, res) => {
 
         for (let i = 0; i < rawCards.length; i++) {
           const c = rawCards[i];
-          if (!c || typeof c.english !== 'string' || typeof c.vietnamese !== 'string' || !c.english.trim() || !c.vietnamese.trim()) continue;
-          const rawCardId = String(c.id || `card_${i}`).replace(/[\/\?#]/g, '_').trim();
+          const rawCardId = String(c.id || `card_${i}`).replace(/[/?#]/g, '_').trim();
           const cardId = rawCardId.startsWith(`${setObjId}_`) ? rawCardId : `${setObjId}_${rawCardId}`;
           syncedCardIds.add(cardId);
 
@@ -272,6 +289,9 @@ router.post('/sync-batch', async (req, res) => {
             `DELETE FROM cards WHERE set_id = ? AND id NOT IN (${placeholders})`,
             [setObjId, ...Array.from(syncedCardIds)]
           );
+        } else {
+          await tx.run(`DELETE FROM card_progress WHERE set_id = ?`, [setObjId]);
+          await tx.run(`DELETE FROM cards WHERE set_id = ?`, [setObjId]);
         }
       }
     });
@@ -297,6 +317,8 @@ router.post('/sync-batch', async (req, res) => {
           title: r.title,
           description: r.description || '',
           cards: [],
+          streak_count: r.streak_count || 0,
+          last_streak_date: r.last_streak_date || null,
           createdAt: typeof r.created_at === 'number' ? r.created_at : parseInt(r.created_at, 10) || Date.now(),
           updatedAt: typeof r.updated_at === 'number' ? r.updated_at : parseInt(r.updated_at, 10) || Date.now()
         });
@@ -356,42 +378,48 @@ router.post('/word-stats', async (req, res) => {
     if (!setId || !cardId) {
       return res.status(400).json({ error: 'Thiếu thông tin setId hoặc cardId.' });
     }
+    if (typeof isCorrect !== 'boolean') {
+      return res.status(400).json({ error: 'isCorrect phải là giá trị boolean.' });
+    }
 
-    const isTrue = isCorrect === true || isCorrect === 'true' || isCorrect === 1;
     const now = Date.now();
+    let cardExists = false;
+    await withTransaction(async (tx) => {
+      const card = await tx.getOne(
+        `SELECT c.id FROM cards c
+         JOIN vocab_sets s ON s.id = c.set_id
+         WHERE c.id = ? AND c.set_id = ? AND s.user_id = ?`,
+        [cardId, setId, userId]
+      );
+      if (!card) return;
+      cardExists = true;
 
-    const card = await getOne(
-      `SELECT c.id FROM cards c
-       JOIN vocab_sets s ON s.id = c.set_id
-       WHERE c.id = ? AND c.set_id = ? AND s.user_id = ?`,
-      [cardId, setId, userId]
-    );
+      if (isCorrect) {
+        await tx.run(
+          `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
+           VALUES (?, ?, ?, 1, 0, ?)
+           ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
+             correct = card_progress.correct + 1,
+             updated_at = excluded.updated_at`,
+          [userId, setId, cardId, now]
+        );
+      } else {
+        await tx.run(
+          `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
+           VALUES (?, ?, ?, 0, 1, ?)
+           ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
+             wrong = card_progress.wrong + 1,
+             updated_at = excluded.updated_at`,
+          [userId, setId, cardId, now]
+        );
+      }
 
-    if (!card) {
+      await tx.run('UPDATE vocab_sets SET updated_at = ? WHERE id = ? AND user_id = ?', [now, setId, userId]);
+    });
+
+    if (!cardExists) {
       return res.status(404).json({ error: 'Không tìm thấy thẻ từ vựng hoặc bạn không có quyền truy cập.' });
     }
-
-    if (isTrue) {
-      await run(
-        `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
-         VALUES (?, ?, ?, 1, 0, ?)
-         ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
-           correct = card_progress.correct + 1,
-           updated_at = excluded.updated_at`,
-        [userId, setId, cardId, now]
-      );
-    } else {
-      await run(
-        `INSERT INTO card_progress (user_id, set_id, card_id, correct, wrong, updated_at)
-         VALUES (?, ?, ?, 0, 1, ?)
-         ON CONFLICT(user_id, set_id, card_id) DO UPDATE SET
-           wrong = card_progress.wrong + 1,
-           updated_at = excluded.updated_at`,
-        [userId, setId, cardId, now]
-      );
-    }
-
-    await run('UPDATE vocab_sets SET updated_at = ? WHERE id = ? AND user_id = ?', [now, setId, userId]);
 
     return res.json({ message: 'Đã cập nhật tiến trình từ vựng nguyên tử.' });
   } catch (err) {
@@ -412,22 +440,23 @@ router.post('/reset-progress', async (req, res) => {
 
     const now = Date.now();
 
-    if (setId !== 'all') {
-      const setExist = await getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setId, userId]);
-      if (!setExist) {
-        return res.status(404).json({ error: 'Không tìm thấy bộ từ vựng cần đặt lại tiến trình.' });
-      }
-    }
-
+    let setExists = setId === 'all';
     await withTransaction(async (tx) => {
       if (setId === 'all') {
         await tx.run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ?', [now, userId]);
         await tx.run('UPDATE vocab_sets SET updated_at = ? WHERE user_id = ?', [now, userId]);
       } else {
+        const existingSet = await tx.getOne('SELECT id FROM vocab_sets WHERE id = ? AND user_id = ?', [setId, userId]);
+        if (!existingSet) return;
+        setExists = true;
         await tx.run('UPDATE card_progress SET correct = 0, wrong = 0, updated_at = ? WHERE user_id = ? AND set_id = ?', [now, userId, setId]);
         await tx.run('UPDATE vocab_sets SET updated_at = ? WHERE id = ? AND user_id = ?', [now, setId, userId]);
       }
     });
+
+    if (!setExists) {
+      return res.status(404).json({ error: 'Không tìm thấy bộ từ vựng cần đặt lại tiến trình.' });
+    }
 
     return res.json({ message: 'Đã đặt lại tiến trình học.' });
   } catch (err) {

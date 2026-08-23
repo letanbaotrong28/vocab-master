@@ -5,10 +5,6 @@ export const ConfirmModal = ({ modal, onClose }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    setIsSubmitting(false);
-  }, [modal.isOpen]);
-
-  useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape' && modal.isOpen && !isSubmitting) {
         onClose();

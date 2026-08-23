@@ -1,4 +1,5 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+const TOKEN_KEY = 'vocabmaster_auth_token_v1';
 
 // Item 83 Fix: Exponential Backoff Retry Helper
 export const retryWithBackoff = async (fn, maxRetries = 2, delayMs = 1000) => {
@@ -27,13 +28,22 @@ const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
 
   const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let didTimeout = false;
+  const abortFromExternalSignal = () => controller.abort(options.signal?.reason);
+  if (options.signal) {
+    if (options.signal.aborted) abortFromExternalSignal();
+    else options.signal.addEventListener('abort', abortFromExternalSignal, { once: true });
+  }
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const res = await fetch(fullUrl, {
       ...options,
       credentials: 'include', // Item 68 Fix: Send HttpOnly cookies with request
-      signal: options.signal || controller.signal // Item 84 Fix: Accept external AbortSignal on unmount
+      signal: controller.signal
     });
 
     const contentType = res.headers.get('content-type');
@@ -62,12 +72,15 @@ const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
     return data;
   } catch (err) {
     clearTimeout(timer);
-    if (err.name === 'AbortError') {
-      const timeoutErr = new Error('Yêu cầu tới máy chủ bị quá thời gian (Timeout 15 giây). Vui lòng thử lại.');
+    if (err.name === 'AbortError' && didTimeout) {
+      const timeoutErr = new Error(`Yêu cầu tới máy chủ bị quá thời gian (Timeout ${Math.round(timeoutMs / 1000)} giây). Vui lòng thử lại.`);
       timeoutErr.status = 408;
       throw timeoutErr;
     }
     throw err;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', abortFromExternalSignal);
   }
 };
 
@@ -108,9 +121,6 @@ export const apiService = {
 
   // Item 65 Fix: Differentiate 401/403 from 500/Network error in getMe
   getMe: async () => {
-    const token = apiService.getToken();
-    if (!token) return null;
-
     try {
       const data = await requestFetch('/api/auth/me', {
         headers: apiService.getAuthHeaders()
@@ -143,7 +153,7 @@ export const apiService = {
         headers: apiService.getAuthHeaders()
       });
     } catch (e) {
-      console.error('Logout revocation notice:', e);
+      console.error('Logout request failed:', e);
     } finally {
       apiService.removeToken();
       window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { status: 401 } }));

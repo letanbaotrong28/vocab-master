@@ -1,6 +1,6 @@
 import React from 'react';
-import { BookOpen, Plus, Sun, Moon, HardDriveDownload, Layers, Flame, User, LogIn, LogOut, ShieldCheck } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { BookOpen, Plus, Sun, Moon, HardDriveDownload, Layers, Flame, User, LogIn, LogOut } from 'lucide-react';
+import { useApp } from '../context/useApp';
 
 export const Header = () => {
   const { 
@@ -46,7 +46,6 @@ export const Header = () => {
             </div>
             <div className="brand-text-group">
               <span className="brand-title">VocabMaster</span>
-              <span className="brand-tagline hide-mobile">Quizlet Edition</span>
             </div>
           </button>
 
@@ -88,7 +87,7 @@ export const Header = () => {
                 <span className="user-name-text hide-mobile">{user.username}</span>
                 <button
                   className="logout-btn"
-                  onClick={logoutUser}
+                onClick={handleLogoutClick}
                   title="Đăng xuất tài khoản"
                 >
                   <LogOut size={16} />
@@ -151,7 +150,7 @@ export const Header = () => {
 
         <button 
           className="mobile-nav-item"
-          onClick={() => (user ? logoutUser() : setIsAuthModalOpen(true))}
+          onClick={() => (user ? handleLogoutClick() : setIsAuthModalOpen(true))}
         >
           <div className="mobile-nav-icon-wrapper">
             {user ? <LogOut size={20} /> : <LogIn size={20} />}

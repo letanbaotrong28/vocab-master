@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { X, User, Lock, Eye, EyeOff, LogIn, UserPlus, ShieldCheck, AlertCircle } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export const AuthModal = () => {
-  const { isAuthModalOpen, setIsAuthModalOpen, loginUser, registerUser, showToast } = useApp();
+  const { isAuthModalOpen, setIsAuthModalOpen, loginUser, registerUser } = useApp();
 
   const [mode, setMode] = useState('login'); // 'login' | 'register'
   const [username, setUsername] = useState('');
@@ -14,11 +14,26 @@ export const AuthModal = () => {
   const [error, setError] = useState('');
 
   React.useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = '';
+    if (!isAuthModalOpen) return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !loading) {
+        setUsername('');
+        setPassword('');
+        setConfirmPassword('');
+        setShowPassword(false);
+        setError('');
+        setIsAuthModalOpen(false);
+      }
     };
-  }, []);
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isAuthModalOpen, loading, setIsAuthModalOpen]);
 
   if (!isAuthModalOpen) return null;
 
@@ -192,10 +207,11 @@ export const AuthModal = () => {
 
             {mode === 'register' && (
               <div className="form-group">
-                <label className="form-label">Nhập lại mật khẩu</label>
+                <label htmlFor="auth-confirm-password" className="form-label">Nhập lại mật khẩu</label>
                 <div className="input-icon-wrapper">
                   <Lock size={18} className="input-icon" />
                   <input
+                    id="auth-confirm-password"
                     type={showPassword ? 'text' : 'password'}
                     className="form-input with-icon"
                     placeholder="Xác nhận lại mật khẩu..."

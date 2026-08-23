@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ArrowLeft, 
   Keyboard, 
@@ -10,13 +10,12 @@ import {
   BookOpen,
   BrainCircuit,
   BarChart2,
-  Award,
   ArrowRightLeft,
   HelpCircle,
   Sparkles
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 // Item 55 Fix: Fisher-Yates Shuffle Algorithm
 const shuffleArray = (array) => {
@@ -29,7 +28,7 @@ const shuffleArray = (array) => {
 };
 
 export const TypingView = () => {
-  const { currentSet, navigateTo, recordWordResult, recordStreak } = useApp();
+  const { currentSet, navigateTo, recordWordResult } = useApp();
 
   const [direction, setDirection] = useState('vn_to_en');
   const [cards, setCards] = useState([]);
@@ -42,6 +41,16 @@ export const TypingView = () => {
   const [isComposing, setIsComposing] = useState(false); // Item 122 Fix: IME Composition handling
 
   const inputRef = useRef(null);
+  const typingSourceJson = JSON.stringify({
+    id: currentSet?.id ?? null,
+    cards: (currentSet?.cards || []).map(card => ({
+      id: card.id,
+      english: card.english,
+      vietnamese: card.vietnamese,
+      example: card.example,
+      exampleTranslation: card.exampleTranslation
+    }))
+  });
 
   // Item 60 Fix: Enhanced string normalization (replaces hyphens with space, strips quotes/punctuation)
   const normalize = (str) => {
@@ -53,7 +62,8 @@ export const TypingView = () => {
       .replace(/\s+/g, ' ');
   };
 
-  const startTypingSession = () => {
+  const startTypingSession = useCallback(() => {
+    const currentSet = JSON.parse(typingSourceJson);
     if (!currentSet || !currentSet.cards || currentSet.cards.length === 0) return;
     
     const prepared = currentSet.cards.map(card => {
@@ -119,11 +129,12 @@ export const TypingView = () => {
     setIsAnswered(false);
     setResults({ correct: 0, wrong: 0, history: [] });
     setIsFinished(false);
-  };
+  }, [direction, typingSourceJson]);
 
   useEffect(() => {
-    startTypingSession();
-  }, [currentSet?.id, direction]);
+    const timer = setTimeout(startTypingSession, 0);
+    return () => clearTimeout(timer);
+  }, [startTypingSession]);
 
   // Item 59 Fix: Reliable auto-focus on input element mount
   useEffect(() => {
@@ -134,6 +145,24 @@ export const TypingView = () => {
       return () => clearTimeout(timer);
     }
   }, [currentIndex, isAnswered, isFinished, cards.length]);
+
+  // Keep hooks unconditional so invalid/deferred routes cannot change hook order.
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        navigateTo('home');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [navigateTo]);
+
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    };
+  }, []);
 
   if (!currentSet || !currentSet.cards || !currentSet.cards.length) {
     return (
@@ -146,21 +175,9 @@ export const TypingView = () => {
 
   const currentItem = cards[currentIndex];
 
-  // Item 118 Fix: Handle Esc key navigation to home
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        navigateTo('home');
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
   const handleCheckAnswer = async (e) => {
     if (e) e.preventDefault();
-    if (isAnswered || !currentItem) return;
+    if (isComposing || isAnswered || !currentItem) return;
 
     const userClean = normalize(inputWord);
 
@@ -175,24 +192,13 @@ export const TypingView = () => {
     setIsCorrect(correct);
     setIsAnswered(true);
 
-    // Item 116 Fix: Await recordWordResult to maintain correct call sequence
-    try {
-      if (recordWordResult && currentSet) {
-        await recordWordResult(currentSet.id, currentItem.card.id, correct);
-      }
-      if (recordStreak && correct) {
-        recordStreak();
-      }
-    } catch (err) {
-      console.error('Error recording word result:', err);
-    }
-
     setResults(prev => ({
       correct: correct ? prev.correct + 1 : prev.correct,
       wrong: !correct ? prev.wrong + 1 : prev.wrong,
       history: [
         ...prev.history,
         {
+          cardId: currentItem.card.id,
           prompt: currentItem.prompt,
           expected: currentItem.expected,
           userTyped: inputWord.trim() || 'Bỏ qua',
@@ -200,17 +206,22 @@ export const TypingView = () => {
         }
       ]
     }));
+
+    try {
+      if (recordWordResult && currentSet) {
+        await recordWordResult(currentSet.id, currentItem.card.id, correct);
+      }
+    } catch (err) {
+      console.error('Error recording word result:', err);
+    }
   };
 
   // Item 63 Fix: Skip / Don't know button
-  const handleSkipQuestion = () => {
+  const handleSkipQuestion = async () => {
     if (isAnswered) return;
     setInputWord('');
     setIsCorrect(false);
     setIsAnswered(true);
-
-    recordWordResult(currentSet.id, currentItem.card.id, false);
-    recordStreak();
 
     setResults(prev => ({
       correct: prev.correct,
@@ -218,6 +229,7 @@ export const TypingView = () => {
       history: [
         ...prev.history,
         {
+          cardId: currentItem.card.id,
           prompt: currentItem.prompt,
           expected: currentItem.expected,
           userTyped: 'Bỏ qua',
@@ -225,6 +237,12 @@ export const TypingView = () => {
         }
       ]
     }));
+
+    try {
+      await recordWordResult(currentSet.id, currentItem.card.id, false);
+    } catch (err) {
+      console.error('Error recording skipped word result:', err);
+    }
   };
 
   const handleNext = () => {
@@ -262,7 +280,7 @@ export const TypingView = () => {
   }
 
   return (
-    <div className="study-view container animate-fade-in">
+    <div className="study-view typing-view container animate-fade-in">
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>
@@ -286,6 +304,7 @@ export const TypingView = () => {
               value={direction}
               onChange={(e) => setDirection(e.target.value)}
               title="Chọn hướng gõ từ"
+              aria-label="Chọn hướng gõ từ"
             >
               <option value="vn_to_en">Tiếng Việt → Gõ Tiếng Anh</option>
               <option value="en_to_vn">Tiếng Anh → Gõ Tiếng Việt</option>
@@ -296,32 +315,39 @@ export const TypingView = () => {
             </select>
           </div>
 
-          <div className="study-mode-nav">
+          <nav className="study-mode-nav" aria-label="Chuyển chế độ học">
             <button 
               className="nav-mode-btn" 
               onClick={() => navigateTo('flashcards', currentSet.id)}
               title="Flashcards"
+              aria-label="Chuyển sang Flashcards"
             >
               <BookOpen size={18} />
+              <span className="nav-mode-label">Thẻ học</span>
             </button>
             <button 
               className="nav-mode-btn" 
               onClick={() => navigateTo('learn', currentSet.id)}
               title="Trắc nghiệm 4 đáp án"
+              aria-label="Chuyển sang học bài"
             >
               <BrainCircuit size={18} />
+              <span className="nav-mode-label">Học bài</span>
             </button>
-            <button className="nav-mode-btn active" title="Gõ từ tiếng Anh">
+            <button className="nav-mode-btn active" title="Gõ từ tiếng Anh" aria-label="Gõ từ" aria-current="page">
               <Keyboard size={18} />
+              <span className="nav-mode-label">Gõ từ</span>
             </button>
             <button 
               className="nav-mode-btn" 
               onClick={() => navigateTo('progress', currentSet.id)}
               title="Thống kê"
+              aria-label="Chuyển sang xem tiến trình"
             >
               <BarChart2 size={18} />
+              <span className="nav-mode-label">Tiến trình</span>
             </button>
-          </div>
+          </nav>
         </div>
       </div>
 
@@ -339,7 +365,14 @@ export const TypingView = () => {
                 <span className="score-wrong">✗ {results.wrong}</span>
               </span>
             </div>
-            <div className="progress-bar">
+            <div
+              className="progress-bar"
+              role="progressbar"
+              aria-label="Tiến độ luyện gõ từ"
+              aria-valuemin={1}
+              aria-valuemax={cards.length}
+              aria-valuenow={currentIndex + 1}
+            >
               <div 
                 className="progress-fill" 
                 style={{ width: `${((currentIndex + 1) / cards.length) * 100}%` }}
@@ -356,6 +389,7 @@ export const TypingView = () => {
                 className="icon-btn-speech"
                 onClick={() => speakTarget(currentItem.prompt)}
                 title="Phát âm"
+                aria-label={`Phát âm ${currentItem.prompt}`}
               >
                 <Volume2 size={22} />
               </button>
@@ -365,11 +399,12 @@ export const TypingView = () => {
           {/* Typing Form */}
           <form onSubmit={handleCheckAnswer} className="typing-form">
             <div className="form-group">
-              <label className="form-label">
+              <label className="form-label" htmlFor="typing-answer">
                 Nhập {currentItem.expectedLang} chính xác:
               </label>
               <input
                 ref={inputRef}
+                id="typing-answer"
                 type="text"
                 className={`form-input typing-input ${
                   isAnswered ? (isCorrect ? 'correct' : 'wrong') : ''
@@ -379,6 +414,9 @@ export const TypingView = () => {
                 onChange={(e) => setInputWord(e.target.value)}
                 onCompositionStart={() => setIsComposing(true)}
                 onCompositionEnd={() => setIsComposing(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && isComposing) e.preventDefault();
+                }}
                 disabled={isAnswered}
                 autoComplete="off"
                 autoCorrect="off"
@@ -389,7 +427,7 @@ export const TypingView = () => {
 
             {/* Answer Feedback Banner */}
             {isAnswered && (
-              <div className={`answer-feedback-banner ${isCorrect ? 'correct' : 'wrong'} animate-slide-down`}>
+              <div className={`answer-feedback-banner ${isCorrect ? 'correct' : 'wrong'} animate-slide-down`} role="status" aria-live="polite">
                 <div className="feedback-icon-title">
                   {isCorrect ? (
                     <>
@@ -457,7 +495,7 @@ export const TypingView = () => {
         </div>
       ) : (
         /* Typing Session Finished Screen */
-        <div className="quiz-results-card card-shadow animate-scale-up text-center">
+        <div className="quiz-results-card card-shadow animate-scale-up text-center" role="status" aria-live="polite">
           <div className="results-trophy-badge">
             <Sparkles size={36} className="text-warning" />
           </div>
@@ -513,8 +551,8 @@ export const TypingView = () => {
               <button 
                 className="btn btn-warning" 
                 onClick={() => {
-                  const wrongPrompts = results.history.filter(h => !h.isCorrect).map(h => h.prompt);
-                  const filteredCards = cards.filter(c => wrongPrompts.includes(c.prompt) || wrongPrompts.includes(c.expected));
+                  const wrongCardIds = new Set(results.history.filter(h => !h.isCorrect).map(h => String(h.cardId)));
+                  const filteredCards = cards.filter(c => wrongCardIds.has(String(c.card.id)));
                   if (filteredCards.length > 0) setCards(filteredCards);
                   setCurrentIndex(0);
                   setInputWord('');

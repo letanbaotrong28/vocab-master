@@ -9,11 +9,9 @@ import {
   Sparkles, 
   FileText,
   X,
-  Check,
-  HelpCircle,
   Loader2
 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export const SetEditorView = () => {
   const { activeView, editingSetId, sets, saveSet, navigateTo, showToast } = useApp();
@@ -36,7 +34,28 @@ export const SetEditorView = () => {
 
   useEffect(() => {
     const currentKey = isEditing ? String(editingSetId) : 'new';
-    if (initializedSetIdRef.current === currentKey && isDirty) {
+    if (initializedSetIdRef.current === currentKey) {
+      return;
+    }
+
+    let savedDraft = null;
+    try {
+      const rawDraft = localStorage.getItem('vocabmaster_editor_draft');
+      const parsedDraft = rawDraft ? JSON.parse(rawDraft) : null;
+      const isRecent = parsedDraft?.savedAt && Date.now() - parsedDraft.savedAt < 7 * 24 * 60 * 60 * 1000;
+      if (parsedDraft?.editorKey === currentKey && isRecent && Array.isArray(parsedDraft.cards)) {
+        savedDraft = parsedDraft;
+      }
+    } catch {}
+
+    if (savedDraft) {
+      setTitle(savedDraft.title || '');
+      setDescription(savedDraft.description || '');
+      setCards(savedDraft.cards);
+      setBatchText(savedDraft.batchText || '');
+      setIsDirty(true);
+      initializedSetIdRef.current = currentKey;
+      showToast('Đã khôi phục bản nháp chưa lưu.', 'info');
       return;
     }
 
@@ -64,7 +83,7 @@ export const SetEditorView = () => {
       setIsDirty(false);
       initializedSetIdRef.current = currentKey;
     }
-  }, [isEditing, editingSetId, sets]);
+  }, [isEditing, editingSetId, sets, navigateTo, showToast]);
 
   // Item 14 Fix: Warn user when navigating away with unsaved changes
   useEffect(() => {
@@ -192,14 +211,16 @@ export const SetEditorView = () => {
     if (isDirty && (title || description || cards.some(c => c.english || c.vietnamese))) {
       try {
         localStorage.setItem('vocabmaster_editor_draft', JSON.stringify({
+          editorKey: isEditing ? String(editingSetId) : 'new',
           title,
           description,
           cards,
+          batchText,
           savedAt: Date.now()
         }));
-      } catch (e) {}
+      } catch {}
     }
-  }, [title, description, cards, isDirty]);
+  }, [title, description, cards, batchText, isDirty, isEditing, editingSetId]);
 
   const parsedBatchPreview = parseBatchText(batchText);
 
@@ -211,26 +232,42 @@ export const SetEditorView = () => {
 
     setIsDirty(true);
     const filteredExisting = cards.filter(c => c.english.trim() || c.vietnamese.trim());
-    setCards([...filteredExisting, ...parsedBatchPreview]);
+    const existingKeys = new Set(filteredExisting.map(c => `${c.english.trim().toLowerCase()}::${c.vietnamese.trim().toLowerCase()}`));
+    const newCards = parsedBatchPreview.filter(c => {
+      const key = `${c.english.trim().toLowerCase()}::${c.vietnamese.trim().toLowerCase()}`;
+      if (existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    });
+
+    if (newCards.length === 0) {
+      showToast('Tất cả thẻ trong phần nhập nhanh đã tồn tại.', 'warning');
+      return;
+    }
+
+    setCards([...filteredExisting, ...newCards]);
     setBatchText('');
     setShowBatchImport(false);
-    showToast(`Đã thêm thành công ${parsedBatchPreview.length} thẻ từ!`, 'success');
+    showToast(`Đã thêm thành công ${newCards.length} thẻ từ!`, 'success');
   };
 
   // Quick preset sample text inserters
   const insertSampleFormat = (type) => {
     if (type === 'pipe') {
+      setIsDirty(true);
       setBatchText(
         `well-known | nổi tiếng | He is a well-known scientist. | Anh ấy là một nhà khoa học nổi tiếng.\n` +
         `state-of-the-art | hiện đại | They use state-of-the-art tech. | Họ dùng công nghệ hiện đại.\n` +
         `Opportunity | Cơ hội | Grab every good opportunity. | Hãy nắm bắt mọi cơ hội tốt.`
       );
     } else if (type === 'tab') {
+      setIsDirty(true);
       setBatchText(
         `Apple\tQuả táo\tI eat an apple every morning.\tTôi ăn một quả táo mỗi sáng.\n` +
         `Banana\tQuả chuối\tMonkeys love bananas.\tKhỉ rất thích ăn chuối.`
       );
     } else if (type === 'dash') {
+      setIsDirty(true);
       setBatchText(
         `well-known - nổi tiếng - He is a well-known person - Anh ấy là người nổi tiếng\n` +
         `Goodbye - Tạm biệt - See you tomorrow - Hẹn gặp lại bạn vào ngày mai`
@@ -248,9 +285,27 @@ export const SetEditorView = () => {
       return;
     }
 
+    const incompleteCards = cards.filter(c => Boolean(c.english.trim()) !== Boolean(c.vietnamese.trim()));
+    if (incompleteCards.length > 0) {
+      showToast(`Có ${incompleteCards.length} thẻ chưa điền đủ tiếng Anh và tiếng Việt. Vui lòng hoàn tất hoặc xóa thẻ đó.`, 'warning');
+      return;
+    }
+
     const validCards = cards.filter(c => c.english.trim() && c.vietnamese.trim());
     if (validCards.length === 0) {
       showToast('Vui lòng điền đầy đủ tiếng Anh và tiếng Việt cho ít nhất 1 thẻ!', 'warning');
+      return;
+    }
+
+    const uniqueKeys = new Set();
+    const hasDuplicate = validCards.some(card => {
+      const key = `${card.english.trim().toLowerCase()}::${card.vietnamese.trim().toLowerCase()}`;
+      if (uniqueKeys.has(key)) return true;
+      uniqueKeys.add(key);
+      return false;
+    });
+    if (hasDuplicate) {
+      showToast('Bộ từ vựng đang có thẻ trùng nhau. Vui lòng xóa thẻ trùng trước khi lưu.', 'warning');
       return;
     }
 
@@ -267,6 +322,7 @@ export const SetEditorView = () => {
 
       await saveSet(setData);
       setIsDirty(false);
+      localStorage.removeItem('vocabmaster_editor_draft');
     } catch (err) {
       showToast(err.message || 'Lỗi khi lưu bộ từ vựng.', 'error');
     } finally {
@@ -381,7 +437,7 @@ export const SetEditorView = () => {
               rows={6}
               placeholder={`well-known | nổi tiếng | He is a well-known scientist. | Anh ấy là một nhà khoa học nổi tiếng.\nstate-of-the-art | hiện đại | They use state-of-the-art tech. | Họ dùng công nghệ hiện đại.`}
               value={batchText}
-              onChange={(e) => setBatchText(e.target.value)}
+              onChange={(e) => { setIsDirty(true); setBatchText(e.target.value); }}
               maxLength={50000}
             />
 

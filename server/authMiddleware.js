@@ -10,31 +10,42 @@ export const JWT_SECRET = process.env.JWT_SECRET || 'vocabmaster_default_fallbac
 
 export const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Chưa đăng nhập hoặc định dạng Bearer Token không hợp lệ.' });
+  if (authHeader && !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Định dạng Bearer Token không hợp lệ.' });
   }
 
-  const token = authHeader.slice(7).trim();
+  const bearerToken = authHeader?.slice(7).trim();
+  const token = bearerToken || req.cookies?.token;
 
   if (!token) {
     return res.status(401).json({ error: 'Chưa đăng nhập. Vui lòng đăng nhập lại.' });
   }
 
-  jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, async (err, decodedUser) => {
+  jwt.verify(token, JWT_SECRET, {
+    algorithms: ['HS256'],
+    issuer: 'VocabMaster',
+    audience: 'VocabMasterUser'
+  }, async (err, decodedUser) => {
     if (err) {
       return res.status(403).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ.' });
     }
 
     try {
       // Check token version against database for server-side token revocation (Item 42 fix)
-      const userDb = await getOne('SELECT id, username, token_version FROM users WHERE id = ?', [decodedUser.id]);
+      const userDb = await getOne('SELECT id, username, token_version, is_admin FROM users WHERE id = ?', [decodedUser.id]);
       if (!userDb || userDb.token_version !== decodedUser.tokenVersion) {
         return res.status(401).json({ error: 'Phiên đăng nhập đã bị thu hồi (Đã đăng xuất). Vui lòng đăng nhập lại.' });
       }
 
-      req.user = { id: userDb.id, username: userDb.username, tokenVersion: userDb.token_version };
+      req.user = {
+        id: userDb.id,
+        username: userDb.username,
+        tokenVersion: userDb.token_version,
+        isAdmin: userDb.is_admin === true || userDb.is_admin === 1
+      };
       next();
     } catch (dbErr) {
+      console.error('Authentication database error:', dbErr.message);
       return res.status(500).json({ error: 'Lỗi máy chủ khi xác thực phiên.' });
     }
   });

@@ -30,7 +30,7 @@ export const storageService = {
       // Item 25 Fix: Clear corrupted JSON data permanently to prevent persistent reload errors
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
-      } catch (e) {}
+      } catch {}
       return [];
     }
   },
@@ -140,7 +140,7 @@ export const storageService = {
     let parsed;
     try {
       parsed = JSON.parse(jsonString);
-    } catch (e) {
+    } catch {
       throw new Error('Cú pháp tệp JSON không hợp lệ.');
     }
 
@@ -162,7 +162,7 @@ export const storageService = {
       }
       // Sanitize Set ID (remove dangerous special characters / ? #)
       let rawSetId = String(set.id || `imported-set-${Date.now()}-${setIdx}`)
-        .replace(/[\/\?#]/g, '_')
+        .replace(/[/?#]/g, '_')
         .trim();
       
       while (usedSetIds.has(rawSetId)) {
@@ -193,7 +193,7 @@ export const storageService = {
 
       const validCards = rawCards.map((card, cardIdx) => {
         let rawCardId = String(card.id || `card-${Date.now()}-${setIdx}-${cardIdx}`)
-          .replace(/[\/\?#]/g, '_')
+          .replace(/[/?#]/g, '_')
           .trim();
 
         while (usedCardIds.has(rawCardId)) {
@@ -289,7 +289,7 @@ export const storageService = {
         localStorage.setItem(key, JSON.stringify(resetStreak));
         return resetStreak;
       }
-    } catch (err) {
+    } catch {
       return { count: 0, lastDate: null };
     }
   },

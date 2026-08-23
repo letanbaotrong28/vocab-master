@@ -1,17 +1,17 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { storageService } from '../services/storage';
 import { apiService } from '../services/apiService';
-
-const AppContext = createContext();
+import { AppContext } from './appContextValue';
 
 export const AppProvider = ({ children }) => {
   const [sets, setSets] = useState([]);
   const [activeView, setActiveView] = useState('home'); // 'home' | 'create' | 'edit' | 'flashcards' | 'learn' | 'typing' | 'progress'
   const [currentSetId, setCurrentSetId] = useState(null);
   const [editingSetId, setEditingSetId] = useState(null);
+  const [studyCardIds, setStudyCardIds] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [theme, setTheme] = useState('light');
-  const [streak, setStreak] = useState({ count: 0, lastDate: null });
+  const [theme, setTheme] = useState(() => storageService.getTheme());
+  const [streak, setStreak] = useState(() => storageService.getStreak());
   
   // Auth State
   const [user, setUser] = useState(null);
@@ -35,60 +35,67 @@ export const AppProvider = ({ children }) => {
     setActiveView('home');
     setCurrentSetId(null);
     setEditingSetId(null);
+    setStudyCardIds(null);
     setIsAuthModalOpen(false);
     setIsImportExportOpen(false);
   };
 
-  // Load initial theme and streak
-  useEffect(() => {
-    const savedTheme = storageService.getTheme();
-    setTheme(savedTheme);
-    document.documentElement.setAttribute('data-theme', savedTheme);
-
-    const loadedStreak = storageService.getStreak();
-    setStreak(loadedStreak);
-
-    // Item 66 & 67 Fix: Synchronize React auth state on unauthorized 401/403 event
-    const handleUnauthorized = () => {
-      setUser(null);
-      resetSessionState();
-      setSets(storageService.getSets());
-    };
-    window.addEventListener('auth:unauthorized', handleUnauthorized);
-
-    // Initial auth check
-    checkAuthAndLoadSets();
-
-    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
-  }, []);
-
-  const checkAuthAndLoadSets = async () => {
+  async function checkAuthAndLoadSets() {
     setIsAuthLoading(true);
     try {
       const currentUser = await apiService.getMe();
       if (currentUser) {
         setUser(currentUser);
+        setStreak(storageService.getStreak(currentUser.id));
         const serverSets = await apiService.getSets();
         setSets(serverSets);
       } else {
         setUser(null);
+        setStreak(storageService.getStreak());
         const localSets = storageService.getSets();
         setSets(localSets);
       }
     } catch (err) {
       console.error('Auth load error:', err);
       setUser(null);
+      setStreak(storageService.getStreak());
       const localSets = storageService.getSets();
       setSets(localSets);
     } finally {
       setIsAuthLoading(false);
     }
-  };
+  }
+
+  // Keep the DOM theme synchronized with the persisted React state.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Initialize authentication and listen for API-level session expiry.
+  useEffect(() => {
+    // Item 66 & 67 Fix: Synchronize React auth state on unauthorized 401/403 event
+    const handleUnauthorized = () => {
+      setUser(null);
+      setStreak(storageService.getStreak());
+      resetSessionState();
+      setSets(storageService.getSets());
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+
+    // Initial auth check
+    const timer = setTimeout(checkAuthAndLoadSets, 0);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    };
+  }, []);
 
   // Login User Action
   const loginUser = async (username, password) => {
     const data = await apiService.login(username, password);
     setUser(data.user);
+    setStreak(storageService.getStreak(data.user.id));
     const serverSets = await apiService.getSets();
     setSets(serverSets);
     resetSessionState();
@@ -99,6 +106,7 @@ export const AppProvider = ({ children }) => {
   const registerUser = async (username, password) => {
     const data = await apiService.register(username, password);
     setUser(data.user);
+    setStreak(storageService.getStreak(data.user.id));
 
     // Initial demo sets seed for brand new registered account
     const localSets = storageService.getSets();
@@ -124,10 +132,11 @@ export const AppProvider = ({ children }) => {
   const logoutUser = async () => {
     await apiService.logout();
     setUser(null);
+    setStreak(storageService.getStreak());
     const localSets = storageService.getSets();
     setSets(localSets);
     resetSessionState();
-    showToast('Đã đăng xuất tài khoản & thu hồi token.', 'info');
+    showToast('Đã đăng xuất khỏi thiết bị này.', 'info');
   };
 
   // Theme Toggle
@@ -135,15 +144,8 @@ export const AppProvider = ({ children }) => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
     storageService.setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
     showToast(`Đã chuyển sang chế độ ${newTheme === 'dark' ? 'Tối (Dark)' : 'Sáng (Light)'}`);
   };
-
-  // Load streak whenever user changes
-  useEffect(() => {
-    const s = storageService.getStreak(user?.id);
-    setStreak(s);
-  }, [user?.id]);
 
   // Record streak activity when studying
   const recordStreak = () => {
@@ -152,8 +154,9 @@ export const AppProvider = ({ children }) => {
   };
 
   // Item 86 & 125 Fix: URL Hash Navigation & State Clean-up on route changes
-  const navigateTo = (view, setId = null) => {
+  const navigateTo = (view, setId = null, options = {}) => {
     setActiveView(view);
+    setStudyCardIds(Array.isArray(options.cardIds) ? options.cardIds.map(String) : null);
 
     if (view === 'home' || view === 'create') {
       setCurrentSetId(null);
@@ -183,6 +186,7 @@ export const AppProvider = ({ children }) => {
           setActiveView('home');
           setCurrentSetId(null);
           setEditingSetId(null);
+          setStudyCardIds(null);
           return;
         }
         const parts = hash.split('/');
@@ -191,6 +195,7 @@ export const AppProvider = ({ children }) => {
 
         if (['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress'].includes(view)) {
           setActiveView(view);
+          setStudyCardIds(null);
           if (view === 'home' || view === 'create') {
             setCurrentSetId(null);
             setEditingSetId(null);
@@ -284,11 +289,11 @@ export const AppProvider = ({ children }) => {
         await apiService.recordWordStats(setId, cardId, isCorrect);
         // Optimistically update state locally
         setSets(prevSets => prevSets.map(set => {
-          if (set.id === setId) {
+          if (String(set.id) === String(setId)) {
             return {
               ...set,
               cards: set.cards.map(card => {
-                if (card.id === cardId) {
+                if (String(card.id) === String(cardId)) {
                   const stats = card.stats || { correct: 0, wrong: 0 };
                   return {
                     ...card,
@@ -355,13 +360,16 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const currentSet = sets.find(s => s.id === currentSetId) || null;
+  const currentSet = currentSetId === null
+    ? null
+    : sets.find(s => String(s.id) === String(currentSetId)) || null;
 
-  const contextValue = useMemo(() => ({
+  const contextValue = {
     sets,
     activeView,
     currentSetId,
     editingSetId,
+    studyCardIds,
     currentSet,
     searchQuery,
     setSearchQuery,
@@ -388,34 +396,11 @@ export const AppProvider = ({ children }) => {
     handleImportSuccess,
     confirmModal,
     setConfirmModal
-  }), [
-    sets,
-    activeView,
-    currentSetId,
-    editingSetId,
-    currentSet,
-    searchQuery,
-    theme,
-    streak,
-    user,
-    isAuthLoading,
-    isAuthModalOpen,
-    toast,
-    isImportExportOpen,
-    confirmModal
-  ]);
+  };
 
   return (
     <AppContext.Provider value={contextValue}>
       {children}
     </AppContext.Provider>
   );
-};
-
-export const useApp = () => {
-  const context = useContext(AppContext);
-  if (!context) {
-    throw new Error('useApp must be used within an AppProvider');
-  }
-  return context;
 };

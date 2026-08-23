@@ -4,11 +4,80 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const sqliteDbPath = process.env.SQLITE_DB_PATH || path.join(__dirname, 'database.db');
 
 export const isPg = Boolean(process.env.DATABASE_URL);
 
 let sqliteDb = null;
+let sqlite3Driver = null;
 let pgPool = null;
+
+const sqliteQueryOn = (database, sql, params = []) => new Promise((resolve, reject) => {
+  database.all(sql, params, (err, rows) => {
+    if (err) reject(err);
+    else resolve(rows);
+  });
+});
+
+const sqliteGetOneOn = (database, sql, params = []) => new Promise((resolve, reject) => {
+  database.get(sql, params, (err, row) => {
+    if (err) reject(err);
+    else resolve(row || null);
+  });
+});
+
+const sqliteRunOn = (database, sql, params = []) => new Promise((resolve, reject) => {
+  database.run(sql, params, function (err) {
+    if (err) reject(err);
+    else resolve({ lastID: this.lastID, changes: this.changes });
+  });
+});
+
+const closeSqliteConnection = (database) => new Promise((resolve, reject) => {
+  database.close((err) => {
+    if (err) reject(err);
+    else resolve();
+  });
+});
+
+const openSqliteConnection = async () => {
+  if (!sqlite3Driver) {
+    const sqlite3Module = await import('sqlite3');
+    sqlite3Driver = sqlite3Module.default || sqlite3Module;
+  }
+
+  return new Promise((resolve, reject) => {
+    const database = new sqlite3Driver.Database(sqliteDbPath, (err) => {
+      if (err) reject(err);
+      else resolve(database);
+    });
+  });
+};
+
+const withSqliteTransaction = async (callback, { foreignKeys = true } = {}) => {
+  const database = await openSqliteConnection();
+  const tx = {
+    query: (sql, params = []) => sqliteQueryOn(database, sql, params),
+    getOne: (sql, params = []) => sqliteGetOneOn(database, sql, params),
+    run: (sql, params = []) => sqliteRunOn(database, sql, params)
+  };
+
+  try {
+    await tx.run('PRAGMA busy_timeout = 5000;');
+    await tx.run(`PRAGMA foreign_keys = ${foreignKeys ? 'ON' : 'OFF'};`);
+    await tx.run('BEGIN IMMEDIATE');
+    const result = await callback(tx);
+    await tx.run('COMMIT');
+    return result;
+  } catch (err) {
+    await tx.run('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    await closeSqliteConnection(database).catch((err) => {
+      console.error('SQLite transaction connection close error:', err.message);
+    });
+  }
+};
 
 // Item 19, 56 & 63 Fix: Parse PostgreSQL BIGINT, Pool timeouts & error events
 if (isPg) {
@@ -17,7 +86,7 @@ if (isPg) {
   pgPool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.PGSSLMODE === 'disable' ? false : {
-      rejectUnauthorized: process.env.NODE_ENV === 'production' && process.env.PGSSL_STRICT === 'true'
+      rejectUnauthorized: process.env.PGSSL_STRICT !== 'false'
     },
     connectionTimeoutMillis: 10000,
     idleTimeoutMillis: 30000,
@@ -36,12 +105,9 @@ export const closeDb = async () => {
     console.log('PostgreSQL connection pool drained cleanly.');
   }
   if (sqliteDb) {
-    return new Promise((resolve) => {
-      sqliteDb.close(() => {
-        console.log('SQLite connection closed gracefully.');
-        resolve();
-      });
-    });
+    await closeSqliteConnection(sqliteDb);
+    sqliteDb = null;
+    console.log('SQLite connection closed gracefully.');
   }
 };
 
@@ -56,8 +122,13 @@ const convertPlaceholders = (sql) => {
   for (let i = 0; i < formatted.length; i++) {
     const char = formatted[i];
     if (char === "'") {
-      inSingleQuote = !inSingleQuote;
-      result += char;
+      if (inSingleQuote && formatted[i + 1] === "'") {
+        result += "''";
+        i++;
+      } else {
+        inSingleQuote = !inSingleQuote;
+        result += char;
+      }
     } else if (char === '?' && !inSingleQuote) {
       result += `$${paramIndex++}`;
     } else {
@@ -73,12 +144,7 @@ export const query = async (sql, params = []) => {
     const res = await pgPool.query(formattedSql, params);
     return res.rows;
   }
-  return new Promise((resolve, reject) => {
-    sqliteDb.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
+  return sqliteQueryOn(sqliteDb, sql, params);
 };
 
 export const getOne = async (sql, params = []) => {
@@ -87,12 +153,7 @@ export const getOne = async (sql, params = []) => {
     const res = await pgPool.query(formattedSql, params);
     return res.rows[0] || null;
   }
-  return new Promise((resolve, reject) => {
-    sqliteDb.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
+  return sqliteGetOneOn(sqliteDb, sql, params);
 };
 
 // Item 18 Fix: Do not swallow 23505 unique constraint errors (allows authRoutes to handle duplicate usernames)
@@ -115,20 +176,12 @@ export const run = async (sql, params = []) => {
       const lastID = res.rows && res.rows[0] && res.rows[0].id ? res.rows[0].id : null;
       return { lastID, changes: res.rowCount };
     } catch (err) {
-      if (err.code === '42P07') {
-        return { lastID: null, changes: 0 };
-      }
       console.error('Postgres Query Error:', err.message, 'SQL:', formattedSql);
       throw err;
     }
   }
 
-  return new Promise((resolve, reject) => {
-    sqliteDb.run(sql, params, function (err) {
-      if (err) reject(err);
-      else resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
+  return sqliteRunOn(sqliteDb, sql, params);
 };
 
 export const withTransaction = async (callback) => {
@@ -171,27 +224,15 @@ export const withTransaction = async (callback) => {
     } finally {
       client.release();
     }
-  } else {
-    try {
-      await run('BEGIN IMMEDIATE');
-      const tx = { query, getOne, run };
-      const result = await callback(tx);
-      await run('COMMIT');
-      return result;
-    } catch (err) {
-      await run('ROLLBACK').catch(() => {});
-      throw err;
-    }
   }
+
+  return withSqliteTransaction(callback);
 };
 
 export const initDb = async () => {
   if (!isPg) {
     if (!sqliteDb) {
-      const sqlite3Module = await import('sqlite3');
-      const sqlite3 = sqlite3Module.default || sqlite3Module;
-      const dbPath = path.join(__dirname, 'database.db');
-      sqliteDb = new sqlite3.Database(dbPath);
+      sqliteDb = await openSqliteConnection();
     }
     try {
       await run('PRAGMA journal_mode = WAL;');
@@ -218,6 +259,7 @@ export const initDb = async () => {
         username VARCHAR(255) UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         token_version INTEGER DEFAULT 1,
+        is_admin BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -228,15 +270,23 @@ export const initDb = async () => {
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         token_version INTEGER DEFAULT 1,
+        is_admin INTEGER NOT NULL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
   }
 
-  try {
-    await run(`ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1`);
-  } catch (e) {
-    // Column already exists
+  if (isPg) {
+    await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1`);
+    await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE`);
+  } else {
+    const userColumns = await query(`PRAGMA table_info(users)`);
+    if (!userColumns.some(column => column.name === 'token_version')) {
+      await run(`ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1`);
+    }
+    if (!userColumns.some(column => column.name === 'is_admin')) {
+      await run(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   // Vocab Sets table
@@ -291,16 +341,34 @@ export const initDb = async () => {
       const cardsCol = columns.find(c => c.name === 'cards');
       if (cardsCol) {
         console.log('Migrating legacy JSON vocab_sets.cards data to relational cards table...');
-        const legacySets = await query(`SELECT id, cards FROM vocab_sets WHERE cards IS NOT NULL AND cards != ''`);
-        for (const set of legacySets) {
-          try {
-            const parsedCards = JSON.parse(set.cards);
-            if (Array.isArray(parsedCards)) {
+        await withSqliteTransaction(async (tx) => {
+          const legacySets = await tx.query(`SELECT id, cards FROM vocab_sets WHERE cards IS NOT NULL AND cards != ''`);
+          await tx.run(`DROP TABLE IF EXISTS vocab_sets_new`);
+          await tx.run(`CREATE TABLE vocab_sets_new (
+            id VARCHAR(255) PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            streak_count INTEGER DEFAULT 0,
+            last_streak_date TEXT,
+            created_at BIGINT,
+            updated_at BIGINT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+          )`);
+          await tx.run(`INSERT INTO vocab_sets_new (id, user_id, title, description, streak_count, last_streak_date, created_at, updated_at)
+                        SELECT id, user_id, title, description, streak_count, last_streak_date, created_at, updated_at FROM vocab_sets`);
+          await tx.run(`DROP TABLE vocab_sets`);
+          await tx.run(`ALTER TABLE vocab_sets_new RENAME TO vocab_sets`);
+
+          for (const set of legacySets) {
+            try {
+              const parsedCards = JSON.parse(set.cards);
+              if (!Array.isArray(parsedCards)) continue;
               for (let i = 0; i < parsedCards.length; i++) {
                 const c = parsedCards[i];
-                if (!c.english || !c.vietnamese) continue;
-                const cardId = String(c.id || `${set.id}_card_${i}`).replace(/[\/\?#]/g, '_').trim();
-                await run(
+                if (typeof c?.english !== 'string' || typeof c?.vietnamese !== 'string' || !c.english.trim() || !c.vietnamese.trim()) continue;
+                const cardId = String(c.id || `${set.id}_card_${i}`).replace(/[/?#]/g, '_').trim();
+                await tx.run(
                   `INSERT INTO cards (id, set_id, english, vietnamese, example, example_translation, position)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
@@ -308,35 +376,62 @@ export const initDb = async () => {
                      vietnamese = excluded.vietnamese,
                      example = excluded.example,
                      example_translation = excluded.example_translation,
-                     position = excluded.position`,
-                  [cardId, set.id, c.english.trim(), c.vietnamese.trim(), c.example || '', c.exampleTranslation || '', i]
+                     position = excluded.position
+                   WHERE cards.set_id = excluded.set_id`,
+                  [cardId, set.id, c.english.trim(), c.vietnamese.trim(), typeof c.example === 'string' ? c.example : '', typeof c.exampleTranslation === 'string' ? c.exampleTranslation : '', i]
                 );
               }
+            } catch (e) {
+              console.warn(`Failed to parse legacy JSON cards for set ${set.id}:`, e.message);
             }
-          } catch (e) {
-            console.warn(`Failed to parse legacy JSON cards for set ${set.id}:`, e.message);
           }
-        }
-
-        await run(`CREATE TABLE IF NOT EXISTS vocab_sets_new (
-          id VARCHAR(255) PRIMARY KEY,
-          user_id INTEGER NOT NULL,
-          title TEXT NOT NULL,
-          description TEXT,
-          streak_count INTEGER DEFAULT 0,
-          last_streak_date TEXT,
-          created_at BIGINT,
-          updated_at BIGINT,
-          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )`);
-        await run(`INSERT INTO vocab_sets_new (id, user_id, title, description, streak_count, last_streak_date, created_at, updated_at)
-                   SELECT id, user_id, title, description, streak_count, last_streak_date, created_at, updated_at FROM vocab_sets`);
-        await run(`DROP TABLE vocab_sets`);
-        await run(`ALTER TABLE vocab_sets_new RENAME TO vocab_sets`);
+        }, { foreignKeys: false });
         console.log('Legacy JSON migration complete. vocab_sets table restructured without NOT NULL cards column.');
       }
     } catch (migErr) {
       console.warn('Migration warning:', migErr.message);
+    }
+  }
+
+  if (!isPg) {
+    const progressColumns = await query(`PRAGMA table_info(card_progress)`);
+    const primaryKeyColumns = progressColumns
+      .filter(column => column.pk > 0)
+      .sort((a, b) => a.pk - b.pk)
+      .map(column => column.name);
+
+    if (primaryKeyColumns.join(',') !== 'user_id,set_id,card_id') {
+      console.log('Migrating card_progress to composite primary key (user_id, set_id, card_id)...');
+      await withSqliteTransaction(async (tx) => {
+        await tx.run(`DROP TABLE IF EXISTS card_progress_new`);
+        await tx.run(`
+          CREATE TABLE card_progress_new (
+            user_id INTEGER NOT NULL,
+            set_id VARCHAR(255) NOT NULL,
+            card_id VARCHAR(255) NOT NULL,
+            correct INTEGER DEFAULT 0,
+            wrong INTEGER DEFAULT 0,
+            updated_at BIGINT,
+            PRIMARY KEY (user_id, set_id, card_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (set_id) REFERENCES vocab_sets(id) ON DELETE CASCADE,
+            FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+          )
+        `);
+        await tx.run(`
+          INSERT INTO card_progress_new (user_id, set_id, card_id, correct, wrong, updated_at)
+          SELECT p.user_id, c.set_id, p.card_id,
+                 CASE WHEN p.correct < 0 THEN 0 ELSE COALESCE(p.correct, 0) END,
+                 CASE WHEN p.wrong < 0 THEN 0 ELSE COALESCE(p.wrong, 0) END,
+                 p.updated_at
+          FROM card_progress p
+          JOIN cards c ON c.id = p.card_id
+          JOIN vocab_sets s ON s.id = c.set_id AND s.user_id = p.user_id
+        `);
+        await tx.run(`DROP TABLE card_progress`);
+        await tx.run(`ALTER TABLE card_progress_new RENAME TO card_progress`);
+      });
+      console.log('card_progress composite primary key migration complete.');
     }
   }
 
@@ -354,15 +449,15 @@ export const initDb = async () => {
     console.warn('Orphan cleanup warning:', cleanErr.message);
   }
 
-  // Record migration version 1 with standard SQL UPSERT
+  // Record the latest schema migration version.
   if (isPg) {
     await run(
-      `INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?) ON CONFLICT(version) DO UPDATE SET applied_at = EXCLUDED.applied_at`,
+      `INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?) ON CONFLICT(version) DO UPDATE SET applied_at = EXCLUDED.applied_at`,
       [Date.now()]
     );
   } else {
     await run(
-      `INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (1, ?)`,
+      `INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (2, ?)`,
       [Date.now()]
     );
   }

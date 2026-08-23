@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   ArrowLeft, 
   BarChart2, 
@@ -9,15 +9,20 @@ import {
   BookOpen, 
   Keyboard,
   Award,
-  Filter,
   Volume2,
   Sparkles
 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export const ProgressView = () => {
   const { currentSet, navigateTo, requestResetProgress } = useApp();
   const [filterMode, setFilterMode] = useState('all'); // 'all' | 'new' | 'weak' | 'mastered'
+
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    };
+  }, []);
 
   if (!currentSet) {
     return (
@@ -56,14 +61,12 @@ export const ProgressView = () => {
 
   const totalAttempts = cardStats.reduce((acc, c) => acc + c.total, 0);
   const totalCorrect = cardStats.reduce((acc, c) => acc + c.correct, 0);
-  const totalWrong = cardStats.reduce((acc, c) => acc + c.wrong, 0);
   
   const overallAccuracyDisplay = totalAttempts > 0 ? `${Math.round((totalCorrect / totalAttempts) * 100)}%` : 'N/A';
 
   const weakCount = cardStats.filter(c => c.status === 'weak').length;
   const masteredCount = cardStats.filter(c => c.status === 'mastered').length;
   const newCount = cardStats.filter(c => c.status === 'new').length;
-  const learningCount = cardStats.filter(c => c.status === 'learning').length;
 
   // Filtered Cards
   let filteredCards = cardStats.filter(c => {
@@ -105,32 +108,39 @@ export const ProgressView = () => {
           </span>
         </div>
 
-        <div className="study-mode-nav">
+        <nav className="study-mode-nav" aria-label="Chuyển chế độ học">
           <button 
             className="nav-mode-btn" 
             onClick={() => navigateTo('flashcards', currentSet.id)}
             title="Flashcards"
+            aria-label="Chuyển sang Flashcards"
           >
             <BookOpen size={18} />
+            <span className="nav-mode-label">Thẻ học</span>
           </button>
           <button 
             className="nav-mode-btn" 
             onClick={() => navigateTo('learn', currentSet.id)}
             title="Trắc nghiệm 4 đáp án"
+            aria-label="Chuyển sang học bài"
           >
             <BrainCircuit size={18} />
+            <span className="nav-mode-label">Học bài</span>
           </button>
           <button 
             className="nav-mode-btn" 
             onClick={() => navigateTo('typing', currentSet.id)}
             title="Gõ từ tiếng Anh"
+            aria-label="Chuyển sang luyện gõ từ"
           >
             <Keyboard size={18} />
+            <span className="nav-mode-label">Gõ từ</span>
           </button>
-          <button className="nav-mode-btn active" title="Thống kê">
+          <button className="nav-mode-btn active" title="Thống kê" aria-label="Tiến trình" aria-current="page">
             <BarChart2 size={18} />
+            <span className="nav-mode-label">Tiến trình</span>
           </button>
-        </div>
+        </nav>
       </div>
 
       {/* Summary KPI Cards Grid (Item 65 & 68 Fix) */}
@@ -192,18 +202,21 @@ export const ProgressView = () => {
           <button 
             className={`btn-filter ${filterMode === 'all' ? 'active' : ''}`}
             onClick={() => setFilterMode('all')}
+            aria-pressed={filterMode === 'all'}
           >
             Tất cả từ ({cards.length})
           </button>
           <button 
             className={`btn-filter ${filterMode === 'new' ? 'active' : ''}`}
             onClick={() => setFilterMode('new')}
+            aria-pressed={filterMode === 'new'}
           >
             Chưa học ({newCount})
           </button>
           <button 
             className={`btn-filter ${filterMode === 'weak' ? 'active' : ''}`}
             onClick={() => setFilterMode('weak')}
+            aria-pressed={filterMode === 'weak'}
           >
             <AlertTriangle size={15} />
             Từ thường sai ({weakCount})
@@ -211,6 +224,7 @@ export const ProgressView = () => {
           <button 
             className={`btn-filter ${filterMode === 'mastered' ? 'active' : ''}`}
             onClick={() => setFilterMode('mastered')}
+            aria-pressed={filterMode === 'mastered'}
           >
             <CheckCircle2 size={15} />
             Đã thành thục ({masteredCount})
@@ -229,43 +243,48 @@ export const ProgressView = () => {
       {/* Words Stats Table */}
       <div className="stats-table-wrapper card-shadow">
         <table className="stats-table">
+          <caption className="sr-only">Thống kê tiến trình từng từ trong bộ {currentSet.title}</caption>
           <thead>
             <tr>
-              <th>Từ tiếng Anh</th>
-              <th>Nghĩa tiếng Việt</th>
-              <th className="text-center">Số lần Đúng</th>
-              <th className="text-center">Số lần Sai</th>
-              <th className="text-center">Tỷ lệ Đúng</th>
-              <th className="text-center">Trạng thái</th>
+              <th scope="col">Từ tiếng Anh</th>
+              <th scope="col">Nghĩa tiếng Việt</th>
+              <th scope="col" className="text-center">Số lần Đúng</th>
+              <th scope="col" className="text-center">Số lần Sai</th>
+              <th scope="col" className="text-center">Tỷ lệ Đúng</th>
+              <th scope="col" className="text-center">Trạng thái</th>
             </tr>
           </thead>
           <tbody>
             {filteredCards.length > 0 ? (
               filteredCards.map((card) => (
                 <tr key={card.id} className={`table-row ${card.status}`}>
-                  <td className="font-semibold text-primary">
+                  <td className="font-semibold text-primary" data-label="Từ tiếng Anh">
                     <div className="word-audio-cell">
                       <span>{card.english}</span>
-                      <button className="icon-btn-subtle" onClick={() => speakEnglish(card.english)}>
+                      <button className="icon-btn-subtle" onClick={() => speakEnglish(card.english)} aria-label={`Phát âm từ ${card.english}`}>
                         <Volume2 size={16} />
                       </button>
                     </div>
                   </td>
-                  <td>{card.vietnamese}</td>
-                  <td className="text-center text-success font-medium">✓ {card.correct}</td>
-                  <td className="text-center text-danger font-medium">✗ {card.wrong}</td>
-                  <td className="text-center">
-                    <div className="table-accuracy-bar">
-                      <div className="bar-bg">
-                        <div 
-                          className={`bar-fill ${card.accuracy >= 70 ? 'high' : card.accuracy >= 50 ? 'medium' : 'low'}`}
-                          style={{ width: `${card.accuracy}%` }}
-                        />
+                  <td data-label="Nghĩa tiếng Việt">{card.vietnamese}</td>
+                  <td className="text-center text-success font-medium" data-label="Số lần đúng">✓ {card.correct}</td>
+                  <td className="text-center text-danger font-medium" data-label="Số lần sai">✗ {card.wrong}</td>
+                  <td className="text-center" data-label="Tỷ lệ đúng">
+                    {card.accuracy === null ? (
+                      <span className="bar-num">N/A</span>
+                    ) : (
+                      <div className="table-accuracy-bar">
+                        <div className="bar-bg">
+                          <div
+                            className={`bar-fill ${card.accuracy >= 70 ? 'high' : card.accuracy >= 50 ? 'medium' : 'low'}`}
+                            style={{ width: `${card.accuracy}%` }}
+                          />
+                        </div>
+                        <span className="bar-num">{card.accuracy}%</span>
                       </div>
-                      <span className="bar-num">{card.accuracy}%</span>
-                    </div>
+                    )}
                   </td>
-                  <td className="text-center">
+                  <td className="text-center" data-label="Trạng thái">
                     {card.status === 'mastered' && <span className="status-tag mastered">Đã thành thục</span>}
                     {card.status === 'weak' && <span className="status-tag weak">Cần ôn tập</span>}
                     {card.status === 'learning' && <span className="status-tag learning">Đang học</span>}
@@ -275,7 +294,7 @@ export const ProgressView = () => {
               ))
             ) : (
               <tr>
-                <td colSpan={6} className="text-center p-8 text-muted">
+                <td colSpan={6} className="stats-empty-cell text-center p-8 text-muted">
                   Không có từ vựng nào trong danh mục này.
                 </td>
               </tr>
@@ -295,7 +314,12 @@ export const ProgressView = () => {
             </div>
           </div>
           <div className="callout-actions">
-            <button className="btn btn-primary" onClick={() => navigateTo('learn', currentSet.id)}>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigateTo('learn', currentSet.id, {
+                cardIds: cardStats.filter(card => card.status === 'weak').map(card => card.id)
+              })}
+            >
               <BrainCircuit size={18} />
               Luyện từ yếu ngay
             </button>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Download, Upload, X, Copy, HardDriveDownload, AlertCircle, Loader2 } from 'lucide-react';
 import { storageService } from '../services/storage';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export const ImportExportModal = () => {
   const { 
@@ -17,7 +17,12 @@ export const ImportExportModal = () => {
   const [jsonText, setJsonText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
-  if (!isImportExportOpen) return null;
+  const prepareImportedSets = (content) => {
+    const normalized = storageService.validateAndNormalizeJson(content);
+    const merged = new Map(sets.map(set => [String(set.id), set]));
+    normalized.forEach(set => merged.set(String(set.id), set));
+    return Array.from(merged.values());
+  };
 
   const handleExportFile = () => {
     try {
@@ -33,7 +38,7 @@ export const ImportExportModal = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       showToast('Đã tải xuống tệp sao lưu JSON thành công!', 'success');
-    } catch (err) {
+    } catch {
       showToast('Có lỗi xảy ra khi xuất dữ liệu', 'warning');
     }
   };
@@ -48,7 +53,7 @@ export const ImportExportModal = () => {
       } else {
         throw new Error('Trình duyệt không hỗ trợ Clipboard API.');
       }
-    } catch (err) {
+    } catch {
       showToast('Không thể tự động sao chép. Vui lòng copy thủ công!', 'warning');
     }
   };
@@ -62,7 +67,7 @@ export const ImportExportModal = () => {
 
     setIsImporting(true);
     try {
-      const imported = storageService.importData(jsonText.trim());
+      const imported = prepareImportedSets(jsonText.trim());
       await handleImportSuccess(imported);
       setIsImportExportOpen(false);
       showToast(`Đã khôi phục thành công ${imported.length} bộ từ vựng!`, 'success');
@@ -99,7 +104,7 @@ export const ImportExportModal = () => {
       setIsImporting(true);
       try {
         const content = e.target.result;
-        const imported = storageService.importData(content);
+        const imported = prepareImportedSets(content);
         await handleImportSuccess(imported);
         setIsImportExportOpen(false);
         showToast(`Đã khôi phục thành công ${imported.length} bộ từ vựng!`, 'success');
@@ -126,11 +131,19 @@ export const ImportExportModal = () => {
   };
 
   React.useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = '';
+    if (!isImportExportOpen) return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !isImporting) setIsImportExportOpen(false);
     };
-  }, []);
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isImportExportOpen, isImporting, setIsImportExportOpen]);
 
   if (!isImportExportOpen) return null;
 
@@ -153,7 +166,7 @@ export const ImportExportModal = () => {
               <p className="modal-subtitle">Xuất hoặc nhập dữ liệu bộ từ vựng dạng tệp JSON</p>
             </div>
           </div>
-          <button className="btn-icon" onClick={() => setIsImportExportOpen(false)} disabled={isImporting}>
+          <button className="btn-icon" onClick={() => setIsImportExportOpen(false)} disabled={isImporting} aria-label="Đóng bảng sao lưu và khôi phục">
             <X size={20} />
           </button>
         </div>

@@ -11,10 +11,9 @@ import {
   Sparkles,
   Layers,
   Clock,
-  UserCheck,
   ChevronDown
 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export const HomeView = () => {
   const { 
@@ -26,11 +25,6 @@ export const HomeView = () => {
   } = useApp();
 
   const [visibleCount, setVisibleCount] = useState(20); // Item 113 Fix: Batch rendering for performance
-
-  // Item 107 Fix: Reset visibleCount when searchQuery changes
-  React.useEffect(() => {
-    setVisibleCount(20);
-  }, [searchQuery]);
 
   // Item 106 Fix: Safe dereferencing of title, description, cards
   const filteredSets = sets.filter(set => {
@@ -84,7 +78,7 @@ export const HomeView = () => {
       <div className="home-control-bar">
         <div className="search-box-wrapper">
           <Search size={20} className="search-icon" />
-          <label htmlFor="home-search-input" className="sr-only" style={{ display: 'none' }}>
+          <label htmlFor="home-search-input" className="sr-only">
             Tìm kiếm bộ từ vựng
           </label>
           <input
@@ -93,12 +87,18 @@ export const HomeView = () => {
             className="search-input"
             placeholder="Tìm kiếm bộ từ vựng, từ tiếng Anh hoặc nghĩa tiếng Việt..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setVisibleCount(20);
+            }}
           />
           {searchQuery && (
             <button 
               className="clear-search-btn" 
-              onClick={() => setSearchQuery('')}
+              onClick={() => {
+                setSearchQuery('');
+                setVisibleCount(20);
+              }}
               aria-label="Xóa từ khóa tìm kiếm"
             >
               ×

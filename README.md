@@ -6,7 +6,7 @@ VocabMaster là ứng dụng web học từ vựng tiếng Anh hiện đại, k�
 
 ## 🛠️ Yêu Cầu Hệ Thống (Environment Requirements)
 
-- **Node.js**: Phiên bản `>= 20.0.0` (Khuyên dùng Node.js 20 LTS hoặc Node.js 22 LTS).
+- **Node.js**: Phiên bản `^20.19.0` hoặc `>= 22.12.0` (phù hợp với Vite 8).
 - **Package Manager**: `npm` v10+
 
 ---
@@ -40,12 +40,18 @@ PORT=5000
 JWT_SECRET=your_secret_jwt_key_vocabmaster
 CLIENT_ORIGIN=http://localhost:5173
 DATABASE_URL=
+PGSSLMODE=require
+PGSSL_STRICT=true
+SQLITE_DB_PATH=
 VITE_API_URL=
 ```
 
 > 💡 **Ghi chú CSDL**:
 > - Nếu để trống `DATABASE_URL`, ứng dụng tự động dùng **SQLite Cục bộ** (`server/database.db`) tích hợp sẵn chế độ **WAL mode** siêu tốc.
 > - Nếu cung cấp `DATABASE_URL` (Supabase, Neon, Render Postgres), server sẽ kết nối trực tiếp CSDL PostgreSQL đám mây.
+> - `CLIENT_ORIGIN` là danh sách origin frontend được phép, phân tách bằng dấu phẩy nếu có nhiều origin. Production từ chối origin ngoài danh sách này.
+> - Kết nối PostgreSQL kiểm tra chứng chỉ TLS theo mặc định. Chỉ đặt `PGSSL_STRICT=false` khi nhà cung cấp yêu cầu chứng chỉ tự ký và bạn hiểu rủi ro.
+> - `SQLITE_DB_PATH` cho phép dùng một file SQLite khác; để trống sẽ dùng `server/database.db`.
 
 ---
 
@@ -94,7 +100,7 @@ Thư mục xuất file sản phẩm: `./dist`
 ### 2. Triển khai lên Render.com / Netlify:
 - **Build Command**: `npm run build`
 - **Start Command**: `npm run server`
-- **Environment Variables**: Thiết lập `JWT_SECRET`, `NODE_VERSION=20`, `DATABASE_URL` (nếu dùng Cloud Postgres).
+- **Environment Variables**: Thiết lập `JWT_SECRET`, `NODE_VERSION=20.19.0`, `CLIENT_ORIGIN` và `DATABASE_URL` (nếu dùng Cloud Postgres).
 
 ---
 
@@ -102,6 +108,7 @@ Thư mục xuất file sản phẩm: `./dist`
 
 Hệ thống hỗ trợ Endpoint tải bản sao lưu CSDL SQLite cục bộ:
 - **Tải File Backup**: GET `/api/admin/backup` (Yêu cầu đăng nhập Header `Authorization: Bearer <TOKEN>`)
+- Tài khoản phải có cờ `is_admin` trong bảng `users`; riêng tên đăng nhập `admin` không tự cấp quyền quản trị.
 
 ---
 

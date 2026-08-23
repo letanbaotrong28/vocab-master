@@ -11,28 +11,17 @@ import {
   Keyboard, 
   BarChart2
 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export const FlashcardView = () => {
-  const { currentSet, navigateTo, showToast, recordWordStats, recordStreak } = useApp();
+  const { currentSet, navigateTo, showToast, recordWordResult } = useApp();
 
-  const [cards, setCards] = useState([]);
+  const [cards, setCards] = useState(() => (
+    currentSet && Array.isArray(currentSet.cards) ? currentSet.cards : []
+  ));
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [isShuffled, setIsShuffled] = useState(false);
-
-  // Item 110 & 111 Fix: Reset cards and clamp currentIndex when set changes or becomes empty
-  useEffect(() => {
-    if (currentSet && Array.isArray(currentSet.cards) && currentSet.cards.length > 0) {
-      setCards(currentSet.cards);
-      setCurrentIndex(0);
-      setIsFlipped(false);
-    } else {
-      setCards([]);
-      setCurrentIndex(0);
-      setIsFlipped(false);
-    }
-  }, [currentSet?.id, currentSet?.updatedAt]);
 
   // Item 115 Fix: Cancel TTS on component unmount
   useEffect(() => {
@@ -85,16 +74,11 @@ export const FlashcardView = () => {
     const card = cards[currentIndex];
     if (!card || !currentSet) return;
     try {
-      if (recordWordStats) {
-        await recordWordStats(currentSet.id, card.id, isCorrect);
-      }
-      if (recordStreak && isCorrect) {
-        recordStreak();
-      }
+      await recordWordResult(currentSet.id, card.id, isCorrect);
       showToast(isCorrect ? 'Đã ghi nhận: Đã biết!' : 'Đã ghi nhận: Cần học lại', isCorrect ? 'success' : 'info');
       handleNext();
     } catch (e) {
-      handleNext();
+      showToast(e.message || 'Không thể ghi nhận kết quả thẻ.', 'warning');
     }
   };
 
@@ -123,7 +107,7 @@ export const FlashcardView = () => {
   useEffect(() => {
     const handleKeyDown = (e) => {
       const tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || e.target.isContentEditable) {
         return;
       }
 
@@ -157,7 +141,7 @@ export const FlashcardView = () => {
   const currentCard = cards[currentIndex];
 
   return (
-    <div className="study-view container animate-fade-in">
+    <div className="study-view flashcard-view container animate-fade-in">
       {/* Top Header & Mode Navigation */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>
@@ -173,32 +157,39 @@ export const FlashcardView = () => {
         </div>
 
         {/* Quick Mode Switcher */}
-        <div className="study-mode-nav">
-          <button className="nav-mode-btn active" title="Flashcards">
+        <nav className="study-mode-nav" aria-label="Chuyển chế độ học">
+          <button className="nav-mode-btn active" title="Flashcards" aria-label="Flashcards" aria-current="page">
             <BookOpen size={18} />
+            <span className="nav-mode-label">Thẻ học</span>
           </button>
           <button 
             className="nav-mode-btn" 
             onClick={() => navigateTo('learn', currentSet.id)}
             title="Trắc nghiệm 4 đáp án"
+            aria-label="Chuyển sang học bài"
           >
             <BrainCircuit size={18} />
+            <span className="nav-mode-label">Học bài</span>
           </button>
           <button 
             className="nav-mode-btn" 
             onClick={() => navigateTo('typing', currentSet.id)}
             title="Gõ từ tiếng Anh"
+            aria-label="Chuyển sang luyện gõ từ"
           >
             <Keyboard size={18} />
+            <span className="nav-mode-label">Gõ từ</span>
           </button>
           <button 
             className="nav-mode-btn" 
             onClick={() => navigateTo('progress', currentSet.id)}
             title="Thống kê"
+            aria-label="Chuyển sang xem tiến trình"
           >
             <BarChart2 size={18} />
+            <span className="nav-mode-label">Tiến trình</span>
           </button>
-        </div>
+        </nav>
       </div>
 
       {/* Progress Bar & Shuffle Control */}
@@ -238,6 +229,7 @@ export const FlashcardView = () => {
                 className="speech-btn" 
                 onClick={(e) => speakEnglish(e, currentCard.english)}
                 title="Nghe phát âm"
+                aria-label={`Nghe phát âm từ ${currentCard.english}`}
               >
                 <Volume2 size={22} />
               </button>
@@ -267,6 +259,7 @@ export const FlashcardView = () => {
                 className="speech-btn" 
                 onClick={(e) => speakEnglish(e, currentCard.english)}
                 title="Nghe lại phát âm tiếng Anh"
+                aria-label={`Nghe phát âm từ ${currentCard.english}`}
               >
                 <Volume2 size={22} />
               </button>

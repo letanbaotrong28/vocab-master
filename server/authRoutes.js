@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { getOne, run } from './db.js';
+import { getOne, run, withTransaction } from './db.js';
 import { JWT_SECRET, authenticateToken } from './authMiddleware.js';
 
 const router = express.Router();
@@ -43,7 +43,7 @@ const setAuthTokenCookie = (res, token) => {
   res.cookie('token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000
   });
 };
@@ -73,8 +73,8 @@ router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
       return res.status(400).json({ error: 'Tên tài khoản và mật khẩu không được để trống.' });
     }
 
-    if (!/^[a-z0-9_\-\.]{3,30}$/.test(cleanUsername)) {
-      return res.status(400).json({ error: 'Tên tài khoản chỉ được chứa chữ cái không dấu, chữ số, dấu gạch ngang và dấu chấm (3-30 ký tự).' });
+    if (!/^[a-z0-9_.-]{3,30}$/.test(cleanUsername)) {
+      return res.status(400).json({ error: 'Tên tài khoản chỉ được chứa chữ cái không dấu, chữ số, dấu gạch dưới, dấu gạch ngang và dấu chấm (3-30 ký tự).' });
     }
 
     if (password.length < 6 || password.length > 100) {
@@ -164,6 +164,7 @@ router.get('/me', authenticateToken, async (req, res) => {
     }
     return res.json({ user });
   } catch (err) {
+    console.error('Get current user error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ.' });
   }
 });
@@ -211,15 +212,14 @@ router.post('/logout-all', authenticateToken, async (req, res) => {
     res.clearCookie('token');
     return res.json({ message: 'Đã đăng xuất thành công khỏi tất cả thiết bị!' });
   } catch (err) {
+    console.error('Logout all devices error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ khi đăng xuất tất cả thiết bị.' });
   }
 });
 
-// Server-side Logout & Token Revocation
+// Logout this browser session. Use /logout-all when every issued JWT must be revoked.
 router.post('/logout', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id;
-    await run('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [userId]);
     res.clearCookie('token');
     return res.json({ message: 'Đã đăng xuất thành công.' });
   } catch (err) {
@@ -232,10 +232,9 @@ router.post('/logout', authenticateToken, async (req, res) => {
 router.delete('/account', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    await run('DELETE FROM card_progress WHERE user_id = ?', [userId]);
-    await run('DELETE FROM cards WHERE set_id IN (SELECT id FROM vocab_sets WHERE user_id = ?)', [userId]);
-    await run('DELETE FROM vocab_sets WHERE user_id = ?', [userId]);
-    await run('DELETE FROM users WHERE id = ?', [userId]);
+    await withTransaction(async (tx) => {
+      await tx.run('DELETE FROM users WHERE id = ?', [userId]);
+    });
 
     res.clearCookie('token');
     return res.json({ message: 'Đã xóa toàn bộ tài khoản và dữ liệu cá nhân thành công.' });

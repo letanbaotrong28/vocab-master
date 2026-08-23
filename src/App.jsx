@@ -1,5 +1,6 @@
 import React, { lazy, Suspense } from 'react';
-import { AppProvider, useApp } from './context/AppContext';
+import { AppProvider } from './context/AppContext';
+import { useApp } from './context/useApp';
 import { Header } from './components/Header';
 import { Toast } from './components/Toast';
 import { ConfirmModal } from './components/ConfirmModal';
@@ -25,7 +26,7 @@ const ViewFallback = () => (
 );
 
 const MainContent = () => {
-  const { activeView, toast, confirmModal, setConfirmModal, isAuthLoading } = useApp();
+  const { activeView, currentSetId, toast, confirmModal, setConfirmModal, isAuthLoading } = useApp();
 
   // Item 110 Fix: Loading Splash Screen during initial Auth Check
   if (isAuthLoading) {
@@ -48,10 +49,10 @@ const MainContent = () => {
         <Suspense fallback={<ViewFallback />}>
           {activeView === 'home' && <HomeView />}
           {(activeView === 'create' || activeView === 'edit') && <SetEditorView />}
-          {activeView === 'flashcards' && <FlashcardView />}
-          {activeView === 'learn' && <LearnView />}
-          {activeView === 'typing' && <TypingView />}
-          {activeView === 'progress' && <ProgressView />}
+          {activeView === 'flashcards' && <FlashcardView key={currentSetId || 'no-set'} />}
+          {activeView === 'learn' && <LearnView key={currentSetId || 'no-set'} />}
+          {activeView === 'typing' && <TypingView key={currentSetId || 'no-set'} />}
+          {activeView === 'progress' && <ProgressView key={currentSetId || 'no-set'} />}
         </Suspense>
       </main>
 

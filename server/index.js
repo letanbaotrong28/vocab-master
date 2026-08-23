@@ -5,8 +5,9 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
-import { initDb, closeDb, getOne } from './db.js';
+import { initDb, closeDb, getOne, run } from './db.js';
 import authRoutes from './authRoutes.js';
 import setsRoutes from './setsRoutes.js';
 import { authenticateToken } from './authMiddleware.js';
@@ -18,13 +19,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, '../dist');
 
-const allowedOrigins = [
-  process.env.CLIENT_ORIGIN,
-  'http://localhost:5173',
-  'http://localhost:5000',
-  'http://127.0.0.1:5173',
-  'http://localhost:4173'
-].filter(Boolean);
+const configuredOrigins = (process.env.CLIENT_ORIGIN || '')
+  .split(',')
+  .map(origin => origin.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+const developmentOrigins = process.env.NODE_ENV === 'production'
+  ? []
+  : [
+      'http://localhost:5173',
+      'http://localhost:5000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:5000',
+      'http://127.0.0.1:4173',
+      'http://localhost:4173'
+    ];
+const allowedOrigins = new Set([...configuredOrigins, ...developmentOrigins]);
 
 // Security headers
 app.use(helmet({
@@ -44,20 +53,13 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps, same-origin static requests)
     if (!origin) return callback(null, true);
     
-    // Check exact whitelist or production patterns (.onrender.com, .netlify.app, .vercel.app, localhost)
-    if (
-      allowedOrigins.includes(origin) ||
-      origin.endsWith('.onrender.com') ||
-      origin.endsWith('.netlify.app') ||
-      origin.endsWith('.vercel.app') ||
-      origin.includes('localhost') ||
-      origin.includes('127.0.0.1')
-    ) {
+    if (allowedOrigins.has(origin)) {
       return callback(null, true);
     }
 
-    // Fallback permit to guarantee production availability
-    callback(null, true);
+    const corsError = new Error('Origin is not allowed by CORS policy.');
+    corsError.code = 'CORS_DENIED';
+    callback(corsError);
   }
 }));
 
@@ -67,8 +69,9 @@ app.use(express.urlencoded({ limit: '2mb', extended: true }));
 // Item 29 Fix: CSRF Validation Header Check for Mutating API Endpoints
 app.use((req, res, next) => {
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && req.path.startsWith('/api/')) {
-    const hasHeader = req.headers['authorization'] || req.headers['content-type'] || req.headers['x-requested-with'];
-    if (!hasHeader) {
+    const hasBearerToken = /^Bearer\s+\S+$/i.test(req.headers['authorization'] || '');
+    const hasAjaxHeader = req.headers['x-requested-with'] === 'XMLHttpRequest';
+    if (!hasBearerToken && !hasAjaxHeader) {
       return res.status(403).json({ error: 'Yêu cầu bị từ chối do thiếu CSRF Validation Header.' });
     }
   }
@@ -139,10 +142,11 @@ app.get('/api/health', async (req, res) => {
       uptime: process.uptime()
     });
   } catch (err) {
+    console.error('Database health check error:', err.message);
     res.status(503).json({
       status: 'error',
       db: 'disconnected',
-      error: err.message,
+      error: 'Database health check failed.',
       timestamp: new Date().toISOString()
     });
   }
@@ -151,7 +155,7 @@ app.get('/api/health', async (req, res) => {
 // Item 58, 127 & P0 Fix (11, 12): Database Backup Download Endpoint with Admin Authorization & PostgreSQL Check
 app.get('/api/admin/backup', authenticateToken, async (req, res) => {
   try {
-    if (!req.user.is_admin && req.user.username !== (process.env.ADMIN_USERNAME || 'admin')) {
+    if (!req.user.isAdmin) {
       return res.status(403).json({ error: 'Bạn không có quyền truy cập endpoint quản trị.' });
     }
 
@@ -159,22 +163,34 @@ app.get('/api/admin/backup', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Tính năng backup file SQLite không khả dụng khi đang sử dụng Cloud PostgreSQL.' });
     }
 
-    const dbPath = path.join(__dirname, 'database.db');
-    const backupPath = path.join(__dirname, `vocabmaster_backup_${Date.now()}.db`);
+    const dbPath = process.env.SQLITE_DB_PATH || path.join(__dirname, 'database.db');
+    const backupPath = path.join(os.tmpdir(), `vocabmaster_backup_${Date.now()}.db`);
 
     if (fs.existsSync(dbPath)) {
       try {
         await run(`VACUUM INTO ?`, [backupPath]);
-        res.download(backupPath, path.basename(backupPath), () => {
-          if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+        res.download(backupPath, path.basename(backupPath), (downloadErr) => {
+          try {
+            if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+          } catch (cleanupErr) {
+            console.error('Backup cleanup error:', cleanupErr.message);
+          }
+          if (downloadErr) console.error('Backup download error:', downloadErr.message);
         });
       } catch (vErr) {
-        res.download(dbPath, `vocabmaster_backup_${Date.now()}.db`);
+        try {
+          if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+        } catch (cleanupErr) {
+          console.error('Backup cleanup error:', cleanupErr.message);
+        }
+        console.error('SQLite backup error:', vErr.message);
+        return res.status(500).json({ error: 'Không thể tạo bản sao lưu SQLite nhất quán.' });
       }
     } else {
       res.status(404).json({ error: 'Không tìm thấy file CSDL SQLite cục bộ.' });
     }
   } catch (err) {
+    console.error('Backup endpoint error:', err.message);
     res.status(500).json({ error: 'Lỗi máy chủ khi xuất file backup.' });
   }
 });
@@ -229,6 +245,23 @@ if (fs.existsSync(distPath)) {
   });
 }
 
+// Consistent JSON errors for middleware/parser failures.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err.code === 'CORS_DENIED') {
+    return res.status(403).json({ error: 'Origin không được phép truy cập API.' });
+  }
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Nội dung JSON không hợp lệ.' });
+  }
+
+  console.error('Unhandled request error:', err);
+  if (req.path.startsWith('/api')) {
+    return res.status(500).json({ error: 'Lỗi máy chủ nội bộ.' });
+  }
+  return next(err);
+});
+
 // Init DB and start server with Graceful Shutdown (Item 25, 26, 27 Fix)
 let server = null;
 
@@ -245,20 +278,36 @@ initDb()
 
 const gracefulShutdown = async (signal) => {
   console.log(`Received ${signal}. Shutting down server gracefully...`);
+  if (server) {
+    await new Promise((resolve) => {
+      let settled = false;
+      let forceCloseTimer = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(forceCloseTimer);
+        console.log('HTTP Server closed cleanly.');
+        resolve();
+      };
+      forceCloseTimer = setTimeout(() => {
+        console.warn('HTTP shutdown timeout reached; closing remaining connections.');
+        server.closeAllConnections?.();
+        finish();
+      }, 10000);
+
+      server.close(() => {
+        finish();
+      });
+      server.closeIdleConnections?.();
+    });
+  }
+
   try {
-    await closeDb(); // Item 26 & 27 Fix: Unified DB pool drain / close
+    await closeDb();
   } catch (e) {
     console.error('Error closing DB:', e.message);
   }
-
-  if (server) {
-    server.close(() => {
-      console.log('HTTP Server closed cleanly.');
-      process.exit(0);
-    });
-  } else {
-    process.exit(0);
-  }
+  process.exit(0);
 };
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

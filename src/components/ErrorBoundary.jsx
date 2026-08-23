@@ -18,6 +18,10 @@ export class ErrorBoundary extends React.Component {
   componentDidMount() {
     this.handleUnhandledRejection = (e) => {
       console.error('Unhandled Promise Rejection caught in ErrorBoundary:', e.reason);
+      this.setState({
+        hasError: true,
+        error: e.reason instanceof Error ? e.reason : new Error(String(e.reason || 'Unhandled promise rejection'))
+      });
     };
     window.addEventListener('unhandledrejection', this.handleUnhandledRejection);
   }
@@ -39,7 +43,7 @@ export class ErrorBoundary extends React.Component {
         }
       }
       keysToRemove.forEach(k => localStorage.removeItem(k));
-    } catch (e) {}
+    } catch {}
     window.location.reload();
   };
 

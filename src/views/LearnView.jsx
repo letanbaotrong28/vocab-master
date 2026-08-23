@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   ArrowLeft, 
   RotateCcw, 
@@ -15,7 +15,7 @@ import {
   HelpCircle
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 // Item 55 Fix: Fisher-Yates Shuffle Algorithm for uniform distribution
 const shuffleArray = (array) => {
@@ -28,7 +28,7 @@ const shuffleArray = (array) => {
 };
 
 export const LearnView = () => {
-  const { currentSet, sets, recordWordResult, recordStreak, navigateTo, showToast } = useApp();
+  const { currentSet, sets, studyCardIds, recordWordResult, navigateTo, showToast } = useApp();
 
   const [direction, setDirection] = useState('en_to_vn'); // 'en_to_vn' | 'vn_to_en' | 'mix' | 'ex_en_to_vn' | 'ex_vn_to_en' | 'ex_mix'
   const [quizQuestions, setQuizQuestions] = useState([]);
@@ -38,8 +38,25 @@ export const LearnView = () => {
   const [results, setResults] = useState({ correct: 0, wrong: 0, history: [] });
   const [isFinished, setIsFinished] = useState(false);
 
+  const questionSourceJson = JSON.stringify({
+    currentSetId: currentSet?.id ?? null,
+    studyCardIds: Array.isArray(studyCardIds) ? studyCardIds.map(String) : null,
+    sets: sets.map(set => ({
+      id: set.id,
+      cards: (set.cards || []).map(card => ({
+        id: card.id,
+        english: card.english,
+        vietnamese: card.vietnamese,
+        example: card.example,
+        exampleTranslation: card.exampleTranslation
+      }))
+    }))
+  });
+
   // Helper to generate distinct options based on chosen direction (Items 52, 53, 54, 55 Fix)
-  const generateQuestions = () => {
+  const generateQuestions = useCallback(() => {
+    const { currentSetId, sets, studyCardIds } = JSON.parse(questionSourceJson);
+    const currentSet = sets.find(set => String(set.id) === String(currentSetId));
     if (!currentSet || !currentSet.cards || currentSet.cards.length === 0) return [];
 
     const allEnglish = Array.from(new Set(sets.flatMap(s => s.cards.map(c => c.english.trim())).filter(Boolean)));
@@ -47,7 +64,14 @@ export const LearnView = () => {
     const allExamples = Array.from(new Set(sets.flatMap(s => s.cards.map(c => (c.example || '').trim())).filter(Boolean)));
     const allExampleTranslations = Array.from(new Set(sets.flatMap(s => s.cards.map(c => (c.exampleTranslation || '').trim())).filter(Boolean)));
 
-    const questions = currentSet.cards.map((card) => {
+    const selectedCardIds = Array.isArray(studyCardIds) && studyCardIds.length > 0
+      ? new Set(studyCardIds.map(String))
+      : null;
+    const sessionCards = selectedCardIds
+      ? currentSet.cards.filter(card => selectedCardIds.has(String(card.id)))
+      : currentSet.cards;
+
+    const questions = sessionCards.map((card) => {
       let isExampleMode = direction.startsWith('ex_');
       let modeType = direction;
 
@@ -140,10 +164,10 @@ export const LearnView = () => {
     });
 
     return shuffleArray(questions);
-  };
+  }, [direction, questionSourceJson]);
 
   // Start new quiz session
-  const startQuiz = () => {
+  const startQuiz = useCallback(() => {
     const qList = generateQuestions();
     setQuizQuestions(qList);
     setCurrentIndex(0);
@@ -151,56 +175,23 @@ export const LearnView = () => {
     setIsAnswered(false);
     setResults({ correct: 0, wrong: 0, history: [] });
     setIsFinished(false);
-  };
+  }, [generateQuestions]);
 
   useEffect(() => {
-    startQuiz();
-  }, [currentSet?.id, direction]);
+    const timer = setTimeout(startQuiz, 0);
+    return () => clearTimeout(timer);
+  }, [startQuiz]);
+
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    };
+  }, []);
 
   const currentQ = quizQuestions[currentIndex];
 
-  // Item 118 Fix: Handle Esc key navigation and ignore inputs
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      const tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
-        return;
-      }
-
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        navigateTo('home');
-        return;
-      }
-
-      if (isFinished || !currentQ) return;
-
-      const key = e.key.toUpperCase();
-
-      if (!isAnswered) {
-        let selectedIndex = -1;
-        if (key === '1' || key === 'A') selectedIndex = 0;
-        else if (key === '2' || key === 'B') selectedIndex = 1;
-        else if (key === '3' || key === 'C') selectedIndex = 2;
-        else if (key === '4' || key === 'D') selectedIndex = 3;
-
-        if (selectedIndex >= 0 && selectedIndex < currentQ.options.length) {
-          handleSelectOption(currentQ.options[selectedIndex]);
-        }
-      } else {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          handleNextQuestion();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFinished, currentQ, isAnswered, currentIndex]);
-
   // Item 116 Fix: Await recordWordResult to prevent out-of-order stats recording
-  const handleSelectOption = async (option) => {
+  const handleSelectOption = useCallback(async (option) => {
     if (isAnswered) return;
     setSelectedOption(option);
     setIsAnswered(true);
@@ -214,6 +205,7 @@ export const LearnView = () => {
       history: [
         ...prev.history,
         {
+          cardId: currentQ.card.id,
           promptText: currentQ.promptText,
           userAnswer: option || 'Bỏ qua',
           correctAnswer: currentQ.correctAnswer,
@@ -226,13 +218,10 @@ export const LearnView = () => {
       if (recordWordResult && currentSet) {
         await recordWordResult(currentSet.id, currentQ.card.id, isCorrect);
       }
-      if (recordStreak && isCorrect) {
-        recordStreak();
-      }
     } catch (e) {
       console.error('Error recording word result:', e);
     }
-  };
+  }, [currentQ, currentSet, isAnswered, recordWordResult]);
 
   // Item 63 Fix: Don't know / Skip button
   const handleSkipQuestion = () => {
@@ -240,7 +229,7 @@ export const LearnView = () => {
     handleSelectOption(null); // Triggers wrong answer state showing correct answer
   };
 
-  const handleNextQuestion = () => {
+  const handleNextQuestion = useCallback(() => {
     if (currentIndex < quizQuestions.length - 1) {
       setCurrentIndex(prev => prev + 1);
       setSelectedOption(null);
@@ -251,7 +240,44 @@ export const LearnView = () => {
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
       }
     }
-  };
+  }, [currentIndex, quizQuestions.length, results.correct]);
+
+  // Item 118 Fix: Handle Esc key navigation and ignore inputs
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || e.target.isContentEditable) {
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        navigateTo('home');
+        return;
+      }
+
+      if (isFinished || !currentQ) return;
+      const key = e.key.toUpperCase();
+
+      if (!isAnswered) {
+        let selectedIndex = -1;
+        if (key === '1' || key === 'A') selectedIndex = 0;
+        else if (key === '2' || key === 'B') selectedIndex = 1;
+        else if (key === '3' || key === 'C') selectedIndex = 2;
+        else if (key === '4' || key === 'D') selectedIndex = 3;
+
+        if (selectedIndex >= 0 && selectedIndex < currentQ.options.length) {
+          handleSelectOption(currentQ.options[selectedIndex]);
+        }
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        handleNextQuestion();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFinished, currentQ, isAnswered, navigateTo, handleSelectOption, handleNextQuestion]);
 
   // Item 62 Fix: Pronounce target prompt / answer accurately
   const speakWord = (text) => {
@@ -284,7 +310,7 @@ export const LearnView = () => {
   }
 
   return (
-    <div className="study-view container animate-fade-in">
+    <div className="study-view learn-view container animate-fade-in">
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>
@@ -308,6 +334,7 @@ export const LearnView = () => {
               value={direction}
               onChange={(e) => setDirection(e.target.value)}
               title="Chọn hướng câu hỏi"
+              aria-label="Chọn hướng câu hỏi"
             >
               <option value="en_to_vn">Tiếng Anh → Tiếng Việt</option>
               <option value="vn_to_en">Tiếng Việt → Tiếng Anh</option>
@@ -318,32 +345,39 @@ export const LearnView = () => {
             </select>
           </div>
 
-          <div className="study-mode-nav">
+          <nav className="study-mode-nav" aria-label="Chuyển chế độ học">
             <button 
               className="nav-mode-btn" 
               onClick={() => navigateTo('flashcards', currentSet.id)}
               title="Flashcards"
+              aria-label="Chuyển sang Flashcards"
             >
               <BookOpen size={18} />
+              <span className="nav-mode-label">Thẻ học</span>
             </button>
-            <button className="nav-mode-btn active" title="Trắc nghiệm 4 đáp án">
+            <button className="nav-mode-btn active" title="Trắc nghiệm 4 đáp án" aria-label="Học bài" aria-current="page">
               <BrainCircuit size={18} />
+              <span className="nav-mode-label">Học bài</span>
             </button>
             <button 
               className="nav-mode-btn" 
               onClick={() => navigateTo('typing', currentSet.id)}
               title="Gõ từ tiếng Anh"
+              aria-label="Chuyển sang luyện gõ từ"
             >
               <Keyboard size={18} />
+              <span className="nav-mode-label">Gõ từ</span>
             </button>
             <button 
               className="nav-mode-btn" 
               onClick={() => navigateTo('progress', currentSet.id)}
               title="Thống kê"
+              aria-label="Chuyển sang xem tiến trình"
             >
               <BarChart2 size={18} />
+              <span className="nav-mode-label">Tiến trình</span>
             </button>
-          </div>
+          </nav>
         </div>
       </div>
 
@@ -361,7 +395,14 @@ export const LearnView = () => {
                 <span className="score-wrong">✗ {results.wrong}</span>
               </span>
             </div>
-            <div className="progress-bar">
+            <div
+              className="progress-bar"
+              role="progressbar"
+              aria-label="Tiến độ bài trắc nghiệm"
+              aria-valuemin={1}
+              aria-valuemax={quizQuestions.length}
+              aria-valuenow={currentIndex + 1}
+            >
               <div 
                 className="progress-fill" 
                 style={{ width: `${((currentIndex + 1) / quizQuestions.length) * 100}%` }}
@@ -378,6 +419,7 @@ export const LearnView = () => {
                 className="icon-btn-speech"
                 onClick={() => speakWord(currentQ.promptText)}
                 title="Phát âm"
+                aria-label={`Phát âm ${currentQ.promptText}`}
               >
                 <Volume2 size={22} />
               </button>
@@ -419,7 +461,7 @@ export const LearnView = () => {
             {!isAnswered ? (
               <button className="btn btn-secondary btn-sm" onClick={handleSkipQuestion}>
                 <HelpCircle size={16} />
-                Không biết / Bỏ qua (Phím Esc)
+                Không biết / Xem đáp án
               </button>
             ) : (
               <button className="btn btn-primary animate-bounce-short" onClick={handleNextQuestion}>
@@ -431,7 +473,7 @@ export const LearnView = () => {
         </div>
       ) : (
         /* Quiz Finished Screen */
-        <div className="quiz-results-card card-shadow animate-scale-up text-center">
+        <div className="quiz-results-card card-shadow animate-scale-up text-center" role="status" aria-live="polite">
           <div className="results-trophy-badge">
             <Sparkles size={36} className="text-warning" />
           </div>
@@ -487,15 +529,15 @@ export const LearnView = () => {
               <button 
                 className="btn btn-warning" 
                 onClick={() => {
-                  const wrongCards = results.history.filter(h => !h.isCorrect).map(h => h.question.card);
-                  const qList = generateQuestions().filter(q => wrongCards.some(wc => wc.id === q.card.id));
+                  const wrongCardIds = new Set(results.history.filter(h => !h.isCorrect).map(h => String(h.cardId)));
+                  const qList = generateQuestions().filter(q => wrongCardIds.has(String(q.card.id)));
                   setQuizQuestions(qList.length > 0 ? qList : generateQuestions());
                   setCurrentIndex(0);
                   setSelectedOption(null);
                   setIsAnswered(false);
                   setResults({ correct: 0, wrong: 0, history: [] });
                   setIsFinished(false);
-                  showToast(`Đã chọn ${wrongCards.length} câu làm sai để luyện lại!`, 'info');
+                  showToast(`Đã chọn ${wrongCardIds.size} câu làm sai để luyện lại!`, 'info');
                 }}
               >
                 <BrainCircuit size={18} />
