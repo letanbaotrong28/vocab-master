@@ -553,6 +553,102 @@ export const AppProvider = ({ children }) => {
     });
   }, [activeView, currentSetId, navigateTo, refreshAccountSets, requireAuth, sets, showToast, user]);
 
+  const deleteSetsNow = useCallback(async (setIds, { silent = false } = {}) => {
+    const requestedIds = new Set((Array.isArray(setIds) ? setIds : [setIds]).map(String));
+    const targets = sets.filter(set => requestedIds.has(String(set.id)));
+    if (targets.length === 0) {
+      if (!silent) showToast('Vui lòng chọn ít nhất một bộ từ vựng để xóa.', 'info');
+      return false;
+    }
+    if (!requireAuth('Vui lòng đăng nhập trước khi xóa bộ từ vựng.')) return false;
+
+    const targetIds = new Set(targets.map(set => String(set.id)));
+    setSets(currentSets => currentSets.filter(set => !targetIds.has(String(set.id))));
+    if ((currentSetId && targetIds.has(String(currentSetId))) || activeView !== 'home') {
+      navigateTo('home', null, { skipGuard: true });
+    }
+    if (!silent) {
+      showToast(`Đã xóa ${targets.length} bộ khỏi giao diện. Đang đồng bộ với tài khoản...`, 'info', 2500);
+    }
+
+    const deleteWrite = studyWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const failures = [];
+        for (const target of targets) {
+          try {
+            const expectedUpdatedAt = Number(target.updatedAt);
+            await retryBusyMutation(() => apiService.deleteSet(
+              target.id,
+              Number.isSafeInteger(expectedUpdatedAt) ? expectedUpdatedAt : null
+            ));
+          } catch (error) {
+            if (error.status !== 404) failures.push({ target, error });
+          }
+        }
+        return failures;
+      });
+    studyWriteQueueRef.current = deleteWrite;
+    const failures = await deleteWrite;
+
+    if (failures.length === 0) {
+      setSets(currentSets => {
+        storageService.cacheAccountSets(user.id, currentSets);
+        return currentSets;
+      });
+      if (!silent) showToast(`Đã xóa ${targets.length} bộ từ vựng.`, 'warning');
+      return true;
+    }
+
+    try {
+      await refreshAccountSets();
+    } catch (refreshError) {
+      console.warn('Unable to refresh sets after partial batch delete:', refreshError);
+      const failedTargets = failures.map(item => item.target);
+      setSets(currentSets => {
+        const existingIds = new Set(currentSets.map(set => String(set.id)));
+        const restored = [...currentSets];
+        failedTargets.forEach(target => {
+          if (!existingIds.has(String(target.id))) restored.push(target);
+        });
+        storageService.cacheAccountSets(user.id, restored);
+        return restored;
+      });
+    }
+    showToast(
+      `Đã xóa ${targets.length - failures.length}/${targets.length} bộ. ${failures.length} bộ chưa thể xóa và đã được khôi phục.`,
+      'warning',
+      7000
+    );
+    return false;
+  }, [activeView, currentSetId, navigateTo, refreshAccountSets, requireAuth, sets, showToast, user]);
+
+  const requestDeleteSets = useCallback((setIds) => {
+    const requestedIds = new Set((Array.isArray(setIds) ? setIds : [setIds]).map(String));
+    const targets = sets.filter(set => requestedIds.has(String(set.id)));
+    if (targets.length === 0) {
+      showToast('Vui lòng chọn ít nhất một bộ từ vựng để xóa.', 'info');
+      return;
+    }
+    if (targets.length === 1) {
+      requestDeleteSet(targets[0].id, targets[0].title);
+      return;
+    }
+    if (!requireAuth('Vui lòng đăng nhập trước khi xóa bộ từ vựng.')) return;
+
+    setConfirmModal({
+      isOpen: true,
+      title: `Xóa ${targets.length} bộ từ vựng`,
+      message: `Bạn có chắc chắn muốn xóa ${targets.length} bộ từ vựng đã chọn? Hành động này không thể hoàn tác.`,
+      confirmText: `Xóa ${targets.length} bộ`,
+      danger: true,
+      onConfirm: async () => {
+        setConfirmModal(current => ({ ...current, isOpen: false }));
+        await deleteSetsNow(targets.map(set => set.id));
+      }
+    });
+  }, [deleteSetsNow, requestDeleteSet, requireAuth, sets, showToast]);
+
   const recordWordResult = useCallback((setId, cardId, isCorrect) => {
     if (!requireAuth('Vui lòng đăng nhập trước khi học.')) throw new Error('Bạn chưa đăng nhập.');
     if (typeof isCorrect !== 'boolean') throw new Error('Kết quả học không hợp lệ.');
@@ -727,6 +823,8 @@ export const AppProvider = ({ children }) => {
     setNavigationGuard,
     saveSet,
     requestDeleteSet,
+    requestDeleteSets,
+    deleteSetsNow,
     recordWordResult,
     requestResetProgress,
     toast,
@@ -740,7 +838,7 @@ export const AppProvider = ({ children }) => {
     sets, activeView, currentSetId, editingSetId, studyCardIds, currentSet,
     searchQuery, theme, toggleTheme, streak, user, isAuthLoading, isStudyViewTransitioning,
     isAuthModalOpen, requireAuth, loginUser, registerUser, logoutUser,
-    navigateTo, setNavigationGuard, saveSet, requestDeleteSet,
+    navigateTo, setNavigationGuard, saveSet, requestDeleteSet, requestDeleteSets, deleteSetsNow,
     recordWordResult, requestResetProgress, toast, showToast,
     isImportExportOpenState, setIsImportExportOpen, handleImportSuccess,
     confirmModal
