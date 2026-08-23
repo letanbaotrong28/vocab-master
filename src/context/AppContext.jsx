@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storageService, normalizeSetCollection, normalizeStreak } from '../services/storage';
 import { apiService, retryWithBackoff } from '../services/apiService';
 import { AppContext } from './appContextValue';
@@ -292,15 +292,20 @@ export const AppProvider = ({ children }) => {
     }
 
     const cardIds = Array.isArray(options.cardIds) ? options.cardIds.map(String) : null;
-    setActiveView(safeView);
-    setStudyCardIds(cardIds);
-    if (safeView === 'home' || safeView === 'create') {
-      setCurrentSetId(null);
-      setEditingSetId(null);
-    } else {
-      setCurrentSetId(setId);
-      setEditingSetId(safeView === 'edit' ? setId : null);
-    }
+    // A study screen is code-split. Marking its state update as a transition
+    // keeps the current themed screen visible until the next module is ready,
+    // instead of briefly replacing it with a blank Suspense frame.
+    startTransition(() => {
+      setActiveView(safeView);
+      setStudyCardIds(cardIds);
+      if (safeView === 'home' || safeView === 'create') {
+        setCurrentSetId(null);
+        setEditingSetId(null);
+      } else {
+        setCurrentSetId(setId);
+        setEditingSetId(safeView === 'edit' ? setId : null);
+      }
+    });
 
     const hash = buildRouteHash(safeView, setId, cardIds);
     if (window.location.hash !== hash) window.history.pushState(null, '', hash);
@@ -338,15 +343,17 @@ export const AppProvider = ({ children }) => {
         }
       }
 
-      setActiveView(route.view);
-      setStudyCardIds(route.cardIds);
-      if (route.view === 'home' || route.view === 'create') {
-        setCurrentSetId(null);
-        setEditingSetId(null);
-      } else {
-        setCurrentSetId(route.setId);
-        setEditingSetId(route.view === 'edit' ? route.setId : null);
-      }
+      startTransition(() => {
+        setActiveView(route.view);
+        setStudyCardIds(route.cardIds);
+        if (route.view === 'home' || route.view === 'create') {
+          setCurrentSetId(null);
+          setEditingSetId(null);
+        } else {
+          setCurrentSetId(route.setId);
+          setEditingSetId(route.view === 'edit' ? route.setId : null);
+        }
+      });
       const canonicalHash = buildRouteHash(route.view, route.setId, route.cardIds);
       if (targetHash !== canonicalHash) window.history.replaceState(null, '', canonicalHash);
       previousHashRef.current = canonicalHash;
