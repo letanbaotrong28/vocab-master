@@ -7,6 +7,7 @@ const ZERO_STREAK = Object.freeze({ count: 0, lastStudyDate: null });
 const VALID_VIEWS = new Set(['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress']);
 const PROTECTED_VIEWS = new Set(['create', 'edit', 'flashcards', 'learn', 'typing', 'progress']);
 const SET_REQUIRED_VIEWS = new Set(['edit', 'flashcards', 'learn', 'typing', 'progress']);
+const STUDY_VIEWS = new Set(['flashcards', 'learn', 'typing', 'progress']);
 
 const retryBusyMutation = async (operation, maxAttempts = 3) => {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -64,6 +65,7 @@ export const AppProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isStudyViewTransitioning, setIsStudyViewTransitioning] = useState(false);
   const [toast, setToast] = useState(null);
   const [isImportExportOpenState, setIsImportExportOpenState] = useState(false);
   const [confirmModal, setConfirmModal] = useState({
@@ -82,6 +84,7 @@ export const AppProvider = ({ children }) => {
   const progressRevisionRef = useRef(0);
   const previousHashRef = useRef(typeof window === 'undefined' ? '#home' : (window.location.hash || '#home'));
   const importOpenRef = useRef(false);
+  const studyViewTransitionTimerRef = useRef(null);
 
   const showToast = useCallback((message, type = 'info', duration = 3000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -91,6 +94,7 @@ export const AppProvider = ({ children }) => {
 
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    if (studyViewTransitionTimerRef.current) clearTimeout(studyViewTransitionTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -292,6 +296,20 @@ export const AppProvider = ({ children }) => {
     }
 
     const cardIds = Array.isArray(options.cardIds) ? options.cardIds.map(String) : null;
+    const shouldMaskStudyChange = safeView !== activeView
+      && (STUDY_VIEWS.has(safeView) || STUDY_VIEWS.has(activeView));
+
+    if (shouldMaskStudyChange) {
+      if (studyViewTransitionTimerRef.current) {
+        clearTimeout(studyViewTransitionTimerRef.current);
+      }
+      setIsStudyViewTransitioning(true);
+      studyViewTransitionTimerRef.current = setTimeout(() => {
+        setIsStudyViewTransitioning(false);
+        studyViewTransitionTimerRef.current = null;
+      }, 120);
+    }
+
     setActiveView(safeView);
     setStudyCardIds(cardIds);
     if (safeView === 'home' || safeView === 'create') {
@@ -698,6 +716,7 @@ export const AppProvider = ({ children }) => {
     streak: user ? streak : ZERO_STREAK,
     user,
     isAuthLoading,
+    isStudyViewTransitioning,
     isAuthModalOpen,
     setIsAuthModalOpen,
     requireAuth,
@@ -719,7 +738,7 @@ export const AppProvider = ({ children }) => {
     setConfirmModal
   }), [
     sets, activeView, currentSetId, editingSetId, studyCardIds, currentSet,
-    searchQuery, theme, toggleTheme, streak, user, isAuthLoading,
+    searchQuery, theme, toggleTheme, streak, user, isAuthLoading, isStudyViewTransitioning,
     isAuthModalOpen, requireAuth, loginUser, registerUser, logoutUser,
     navigateTo, setNavigationGuard, saveSet, requestDeleteSet,
     recordWordResult, requestResetProgress, toast, showToast,

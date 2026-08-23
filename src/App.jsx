@@ -17,7 +17,15 @@ import { TypingView } from './views/TypingView';
 import { ProgressView } from './views/ProgressView';
 
 const MainContent = () => {
-  const { activeView, currentSetId, toast, confirmModal, setConfirmModal, isAuthLoading } = useApp();
+  const {
+    activeView,
+    currentSetId,
+    toast,
+    confirmModal,
+    setConfirmModal,
+    isAuthLoading,
+    isStudyViewTransitioning
+  } = useApp();
   const mainContentRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -53,6 +61,10 @@ const MainContent = () => {
         {activeView === 'learn' && <LearnView key={currentSetId || 'no-set'} />}
         {activeView === 'typing' && <TypingView key={currentSetId || 'no-set'} />}
         {activeView === 'progress' && <ProgressView key={currentSetId || 'no-set'} />}
+        <div
+          className={`study-view-transition-mask${isStudyViewTransitioning ? ' is-active' : ''}`}
+          aria-hidden="true"
+        />
       </main>
 
       {/* Toast Notifications */}

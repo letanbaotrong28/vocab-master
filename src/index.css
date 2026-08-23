@@ -3509,7 +3509,37 @@ code {
 
 .main-body {
   flex: 1;
+  position: relative;
+  isolation: isolate;
   background: var(--bg-app);
+}
+
+.study-view-transition-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  transform: translateZ(0);
+  will-change: opacity;
+  visibility: hidden;
+  opacity: 0;
+  background: var(--bg-app);
+  transition:
+    opacity 80ms ease-out,
+    visibility 0s linear 80ms;
+}
+
+.study-view-transition-mask.is-active {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 35ms ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .study-view-transition-mask,
+  .study-view-transition-mask.is-active {
+    transition: none;
+  }
 }
 
 .main-body:focus,
