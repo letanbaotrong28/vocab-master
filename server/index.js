@@ -15,6 +15,9 @@ import { authenticateToken } from './authMiddleware.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Render/Cloudflare terminates TLS before forwarding requests to Express.
+app.set('trust proxy', 1);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, '../dist');
@@ -46,13 +49,15 @@ app.use(helmet({
 
 app.use(cookieParser());
 
-// Robust CORS with production domain support (Item 13 Fix)
-app.use(cors({
+// CORS is only relevant to API calls. Applying it globally also intercepts
+// same-origin ES modules, which browsers fetch in CORS mode, and can leave the
+// production page blank before React has a chance to start.
+const apiCors = cors({
   credentials: true,
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, same-origin static requests)
+    // Allow requests with no origin, such as server-to-server and mobile clients.
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.has(origin)) {
       return callback(null, true);
     }
@@ -61,7 +66,20 @@ app.use(cors({
     corsError.code = 'CORS_DENIED';
     callback(corsError);
   }
-}));
+});
+
+app.use('/api', (req, res, next) => {
+  const requestOrigin = (req.get('origin') || '').replace(/\/+$/, '');
+  const sameOrigin = `${req.protocol}://${req.get('host')}`.replace(/\/+$/, '');
+
+  // Same-origin API calls do not need CORS response headers and must always work,
+  // including on Render preview URLs and custom domains.
+  if (!requestOrigin || requestOrigin === sameOrigin) {
+    return next();
+  }
+
+  return apiCors(req, res, next);
+});
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
@@ -77,8 +95,6 @@ app.use((req, res, next) => {
   }
   next();
 });
-
-app.set('trust proxy', 1); // Item 80 Fix: Trust reverse proxy IP headers (Render/Cloudflare)
 
 // Item 80 Fix: Memory Pruning Timer for Rate Limiter Map
 const rateLimitMap = new Map();
@@ -210,7 +226,17 @@ app.use('/api', (req, res) => {
 
 // Static serving for production dist build
 if (fs.existsSync(distPath)) {
-  app.use(express.static(distPath));
+  app.use(express.static(distPath, {
+    setHeaders: (res, filePath) => {
+      if (path.basename(filePath) === 'index.html') {
+        // Always revalidate the HTML shell so it cannot reference assets from an older deploy.
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        // Vite asset names include a content hash and are safe to cache permanently.
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
 
   // Item 61 Fix: Only serve index.html for page routes (return 404 for missing static assets with extensions)
   app.use((req, res, next) => {
@@ -218,6 +244,7 @@ if (fs.existsSync(distPath)) {
     if (path.extname(req.path)) {
       return res.status(404).send('Static asset not found');
     }
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
     res.sendFile(path.join(distPath, 'index.html'), (err) => {
       if (err) next();
     });

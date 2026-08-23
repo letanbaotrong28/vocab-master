@@ -249,11 +249,21 @@ export const storageService = {
 
   // Theme Management
   getTheme: () => {
-    return localStorage.getItem(THEME_KEY) || 'light';
+    try {
+      const savedTheme = localStorage.getItem(THEME_KEY);
+      return savedTheme === 'dark' ? 'dark' : 'light';
+    } catch (err) {
+      console.warn('Theme storage is unavailable:', err);
+      return 'light';
+    }
   },
 
   setTheme: (theme) => {
-    localStorage.setItem(THEME_KEY, theme);
+    try {
+      localStorage.setItem(THEME_KEY, theme === 'dark' ? 'dark' : 'light');
+    } catch (err) {
+      console.warn('Unable to persist theme:', err);
+    }
   },
 
   // Streak Management (Items 45, 46, 48 Fixes)
