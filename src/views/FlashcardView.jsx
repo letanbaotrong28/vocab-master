@@ -24,10 +24,12 @@ export const FlashcardView = () => {
   const [isShuffled, setIsShuffled] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const recordingRef = React.useRef(false);
+  const unlockTimerRef = React.useRef(null);
 
   // Item 115 Fix: Cancel TTS on component unmount
   useEffect(() => {
     return () => {
+      if (unlockTimerRef.current) window.clearTimeout(unlockTimerRef.current);
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -72,22 +74,26 @@ export const FlashcardView = () => {
   };
 
   // Item 112 Fix: Mark card as known or still learning
-  const handleMarkCard = async (isCorrect) => {
+  const handleMarkCard = (isCorrect) => {
     if (recordingRef.current) return;
     const card = cards[currentIndex];
     if (!card || !currentSet) return;
     recordingRef.current = true;
     setIsRecording(true);
     try {
-      await recordWordResult(currentSet.id, card.id, isCorrect);
+      Promise.resolve(recordWordResult(currentSet.id, card.id, isCorrect)).catch((error) => {
+        showToast(error.message || 'Không thể lưu kết quả thẻ. Kết nối mạng có thể đang gián đoạn.', 'warning', 6000);
+      });
       showToast(isCorrect ? 'Đã ghi nhận: Đã biết!' : 'Đã ghi nhận: Cần học lại', isCorrect ? 'success' : 'info');
       handleNext();
     } catch (e) {
       showToast(e.message || 'Không thể ghi nhận kết quả thẻ.', 'warning');
-    } finally {
+    }
+    unlockTimerRef.current = window.setTimeout(() => {
       recordingRef.current = false;
       setIsRecording(false);
-    }
+      unlockTimerRef.current = null;
+    }, 180);
   };
 
   // Item 115 Fix: Text-To-Speech with Voice Selection

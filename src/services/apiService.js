@@ -213,6 +213,7 @@ export const apiService = {
   recordWordStats: (setId, cardId, isCorrect, studyDate) => requestFetch('/api/sets/word-stats', {
     method: 'POST',
     headers: jsonHeaders(),
+    keepalive: true,
     body: JSON.stringify({ setId, cardId, isCorrect, studyDate })
   }),
 

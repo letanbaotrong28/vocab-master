@@ -232,8 +232,8 @@ export const LearnView = () => {
 
   const currentQ = quizQuestions[currentIndex];
 
-  // Item 116 Fix: Await recordWordResult to prevent out-of-order stats recording
-  const handleSelectOption = useCallback(async (option) => {
+  // Show feedback immediately; AppContext serializes persistence in the background.
+  const handleSelectOption = useCallback((option) => {
     if (isAnswered || submittingRef.current || !currentQ) return;
 
     const isCorrect = typeof option === 'string'
@@ -241,17 +241,6 @@ export const LearnView = () => {
 
     submittingRef.current = true;
     setIsSubmitting(true);
-    try {
-      if (recordWordResult && currentSet) {
-        await recordWordResult(currentSet.id, currentQ.card.id, isCorrect);
-      }
-    } catch (error) {
-      showToast(error.message || 'Không thể lưu kết quả. Vui lòng thử lại.', 'warning');
-      submittingRef.current = false;
-      setIsSubmitting(false);
-      return;
-    }
-
     setSelectedOption(option);
     setIsAnswered(true);
 
@@ -271,8 +260,20 @@ export const LearnView = () => {
       ]
     }));
 
-    submittingRef.current = false;
-    setIsSubmitting(false);
+    try {
+      if (recordWordResult && currentSet) {
+        Promise.resolve(recordWordResult(currentSet.id, currentQ.card.id, isCorrect)).catch((error) => {
+          showToast(error.message || 'Không thể lưu kết quả. Kết nối mạng có thể đang gián đoạn.', 'warning', 6000);
+        });
+      }
+    } catch (error) {
+      showToast(error.message || 'Không thể lưu kết quả.', 'warning');
+    }
+
+    queueMicrotask(() => {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+    });
   }, [currentQ, currentSet, isAnswered, recordWordResult, showToast]);
 
   // Item 63 Fix: Don't know / Skip button
