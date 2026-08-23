@@ -294,7 +294,7 @@ export const TypingView = () => {
 
   if (!cards || cards.length === 0) {
     return (
-      <div className="study-view container animate-fade-in text-center p-8">
+      <div className="study-view container text-center p-8">
         <div style={{ padding: '4rem 0' }}>
           <div className="spinner mb-3"></div>
           <p className="text-muted">Đang khởi tạo bài học gõ từ...</p>
@@ -304,7 +304,7 @@ export const TypingView = () => {
   }
 
   return (
-    <div className="study-view typing-view container animate-fade-in">
+    <div className="study-view typing-view container">
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>

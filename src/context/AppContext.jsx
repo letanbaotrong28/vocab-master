@@ -1,7 +1,6 @@
-import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storageService, normalizeSetCollection, normalizeStreak } from '../services/storage';
 import { apiService, retryWithBackoff } from '../services/apiService';
-import { prepareViewForNavigation } from '../services/viewLoader';
 import { AppContext } from './appContextValue';
 
 const ZERO_STREAK = Object.freeze({ count: 0, lastStudyDate: null });
@@ -81,7 +80,6 @@ export const AppProvider = ({ children }) => {
   const studyWriteQueueRef = useRef(Promise.resolve());
   const activeUserIdRef = useRef(null);
   const progressRevisionRef = useRef(0);
-  const navigationRequestRef = useRef(0);
   const previousHashRef = useRef(typeof window === 'undefined' ? '#home' : (window.location.hash || '#home'));
   const importOpenRef = useRef(false);
 
@@ -104,7 +102,6 @@ export const AppProvider = ({ children }) => {
   }, [isImportExportOpenState]);
 
   const applyHomeState = useCallback(({ replaceHash = false } = {}) => {
-    navigationRequestRef.current += 1;
     setActiveView('home');
     setCurrentSetId(null);
     setEditingSetId(null);
@@ -295,36 +292,21 @@ export const AppProvider = ({ children }) => {
     }
 
     const cardIds = Array.isArray(options.cardIds) ? options.cardIds.map(String) : null;
-    const requestId = ++navigationRequestRef.current;
-    const commitView = () => {
-      if (requestId !== navigationRequestRef.current) return;
-      startTransition(() => {
-        setActiveView(safeView);
-        setStudyCardIds(cardIds);
-        if (safeView === 'home' || safeView === 'create') {
-          setCurrentSetId(null);
-          setEditingSetId(null);
-        } else {
-          setCurrentSetId(setId);
-          setEditingSetId(safeView === 'edit' ? setId : null);
-        }
-      });
-      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-      window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
-    };
-
-    if (safeView === 'home') {
-      commitView();
+    setActiveView(safeView);
+    setStudyCardIds(cardIds);
+    if (safeView === 'home' || safeView === 'create') {
+      setCurrentSetId(null);
+      setEditingSetId(null);
     } else {
-      prepareViewForNavigation(safeView).then(commitView).catch(error => {
-        if (requestId !== navigationRequestRef.current) return;
-        showToast(error.message || 'Không thể tải màn hình. Vui lòng thử lại.', 'warning');
-      });
+      setCurrentSetId(setId);
+      setEditingSetId(safeView === 'edit' ? setId : null);
     }
 
     const hash = buildRouteHash(safeView, setId, cardIds);
     if (window.location.hash !== hash) window.history.pushState(null, '', hash);
     previousHashRef.current = hash;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
     return true;
   }, [activeView, applyHomeState, requireAuth, sets, showToast]);
 
@@ -356,27 +338,15 @@ export const AppProvider = ({ children }) => {
         }
       }
 
-      const requestId = ++navigationRequestRef.current;
-      const commitRoute = () => {
-        if (requestId !== navigationRequestRef.current) return;
-        startTransition(() => {
-          setActiveView(route.view);
-          setStudyCardIds(route.cardIds);
-          if (route.view === 'home' || route.view === 'create') {
-            setCurrentSetId(null);
-            setEditingSetId(null);
-          } else {
-            setCurrentSetId(route.setId);
-            setEditingSetId(route.view === 'edit' ? route.setId : null);
-          }
-        });
-      };
-      if (route.view === 'home') commitRoute();
-      else prepareViewForNavigation(route.view).then(commitRoute).catch(error => {
-        if (requestId !== navigationRequestRef.current) return;
-        applyHomeState({ replaceHash: true });
-        showToast(error.message || 'Không thể tải màn hình. Đã quay lại trang chủ.', 'warning');
-      });
+      setActiveView(route.view);
+      setStudyCardIds(route.cardIds);
+      if (route.view === 'home' || route.view === 'create') {
+        setCurrentSetId(null);
+        setEditingSetId(null);
+      } else {
+        setCurrentSetId(route.setId);
+        setEditingSetId(route.view === 'edit' ? route.setId : null);
+      }
       const canonicalHash = buildRouteHash(route.view, route.setId, route.cardIds);
       if (targetHash !== canonicalHash) window.history.replaceState(null, '', canonicalHash);
       previousHashRef.current = canonicalHash;

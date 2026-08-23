@@ -143,7 +143,7 @@ export const FlashcardView = () => {
 
   if (!currentSet || !cards.length) {
     return (
-      <div className="container animate-fade-in text-center p-8">
+      <div className="container text-center p-8">
         <h2>Không tìm thấy bộ từ vựng hoặc bộ từ vựng rỗng!</h2>
         <button type="button" className="btn btn-primary mt-4" onClick={() => navigateTo('home')}>
           Quay lại trang chủ
@@ -155,7 +155,7 @@ export const FlashcardView = () => {
   const currentCard = cards[currentIndex];
 
   return (
-    <div className="study-view flashcard-view container animate-fade-in">
+    <div className="study-view flashcard-view container">
       {/* Top Header & Mode Navigation */}
       <div className="study-header">
         <button type="button" className="btn btn-ghost" onClick={() => navigateTo('home')}>

@@ -353,7 +353,7 @@ export const LearnView = () => {
 
   if (!quizQuestions || quizQuestions.length === 0) {
     return (
-      <div className="study-view container animate-fade-in text-center p-8">
+      <div className="study-view container text-center p-8">
         <div style={{ padding: '4rem 0' }}>
           <div className="spinner mb-3"></div>
           <p className="text-muted">Đang chuẩn bị câu hỏi trắc nghiệm...</p>
@@ -363,7 +363,7 @@ export const LearnView = () => {
   }
 
   return (
-    <div className="study-view learn-view container animate-fade-in">
+    <div className="study-view learn-view container">
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>

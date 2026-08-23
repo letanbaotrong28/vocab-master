@@ -64,7 +64,7 @@ export const HomeView = () => {
   };
 
   return (
-    <div className="home-view container animate-fade-in">
+    <div className="home-view container">
       {/* Hero Section */}
       <section className="hero-banner">
         <div className="hero-content">

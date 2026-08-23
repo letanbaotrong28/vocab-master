@@ -93,7 +93,7 @@ export const ProgressView = () => {
   };
 
   return (
-    <div className="progress-view container animate-fade-in">
+    <div className="progress-view container">
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>
