@@ -576,6 +576,33 @@ code {
   border-radius: var(--radius-full);
 }
 
+.syncing-set-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 4px 10px;
+  color: var(--primary);
+  background: var(--primary-light);
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.syncing-set-badge .spinner {
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+}
+
+.set-list-item.is-syncing {
+  border-color: var(--primary);
+}
+
+.set-list-item button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
 .set-date-badge {
   display: inline-flex;
   align-items: center;
