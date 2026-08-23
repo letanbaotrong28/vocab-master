@@ -64,6 +64,8 @@ export const AppProvider = ({ children }) => {
 
   const toastTimerRef = useRef(null);
   const navigationGuardRef = useRef(null);
+  const studyWriteQueueRef = useRef(Promise.resolve());
+  const activeUserIdRef = useRef(null);
   const previousHashRef = useRef(typeof window === 'undefined' ? '#home' : (window.location.hash || '#home'));
   const importOpenRef = useRef(false);
 
@@ -103,6 +105,7 @@ export const AppProvider = ({ children }) => {
     const safeStreak = normalizeStreak(nextStreak);
     const safeSets = normalizeSetCollection(nextSets, { requireCards: false });
     setUser(nextUser);
+    activeUserIdRef.current = nextUser.id;
     setStreak(safeStreak);
     setSets(safeSets);
     storageService.cacheSession(nextUser, safeStreak);
@@ -110,6 +113,7 @@ export const AppProvider = ({ children }) => {
   }, []);
 
   const clearAuthenticatedSession = useCallback(({ announce = false } = {}) => {
+    activeUserIdRef.current = null;
     setUser(null);
     setStreak(ZERO_STREAK);
     setSets(storageService.getSets());
@@ -446,37 +450,59 @@ export const AppProvider = ({ children }) => {
     });
   }, [activeView, currentSetId, navigateTo, refreshAccountSets, requireAuth, sets, showToast, user]);
 
-  const recordWordResult = useCallback(async (setId, cardId, isCorrect) => {
+  const recordWordResult = useCallback((setId, cardId, isCorrect) => {
     if (!requireAuth('Vui lòng đăng nhập trước khi học.')) throw new Error('Bạn chưa đăng nhập.');
     if (typeof isCorrect !== 'boolean') throw new Error('Kết quả học không hợp lệ.');
     const studyDate = storageService.getLocalDateString();
-    const result = await apiService.recordWordStats(setId, cardId, isCorrect, studyDate);
-    const nextStreak = normalizeStreak(result?.streak || streak);
-    setStreak(nextStreak);
-    storageService.cacheSession(user, nextStreak);
-    setSets(currentSets => {
-      const nextSets = currentSets.map(set => {
-        if (String(set.id) !== String(setId)) return set;
-        return {
-          ...set,
-          cards: (set.cards || []).map(card => {
-            if (String(card.id) !== String(cardId)) return card;
-            const stats = card.stats || { correct: 0, wrong: 0 };
+    const userId = user.id;
+
+    const queuedWrite = studyWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (String(activeUserIdRef.current) !== String(userId)) return { skipped: true };
+        let result;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            result = await apiService.recordWordStats(setId, cardId, isCorrect, studyDate);
+            break;
+          } catch (error) {
+            const isBusy = error.data?.code === 'MUTATION_BUSY' && attempt < 2;
+            if (!isBusy) throw error;
+            await new Promise(resolve => setTimeout(resolve, 180 * (attempt + 1)));
+          }
+        }
+
+        if (String(activeUserIdRef.current) !== String(userId)) return result;
+        const nextStreak = normalizeStreak(result?.streak);
+        setStreak(nextStreak);
+        storageService.cacheSession(user, nextStreak);
+        setSets(currentSets => {
+          const nextSets = currentSets.map(set => {
+            if (String(set.id) !== String(setId)) return set;
             return {
-              ...card,
-              stats: {
-                correct: (Number.parseInt(stats.correct, 10) || 0) + (isCorrect ? 1 : 0),
-                wrong: (Number.parseInt(stats.wrong, 10) || 0) + (isCorrect ? 0 : 1)
-              }
+              ...set,
+              cards: (set.cards || []).map(card => {
+                if (String(card.id) !== String(cardId)) return card;
+                const stats = card.stats || { correct: 0, wrong: 0 };
+                return {
+                  ...card,
+                  stats: {
+                    correct: Math.min(2147483647, (Number.parseInt(stats.correct, 10) || 0) + (isCorrect ? 1 : 0)),
+                    wrong: Math.min(2147483647, (Number.parseInt(stats.wrong, 10) || 0) + (isCorrect ? 0 : 1))
+                  }
+                };
+              })
             };
-          })
-        };
+          });
+          storageService.cacheAccountSets(userId, nextSets);
+          return nextSets;
+        });
+        return result;
       });
-      storageService.cacheAccountSets(user.id, nextSets);
-      return nextSets;
-    });
-    return result;
-  }, [requireAuth, streak, user]);
+
+    studyWriteQueueRef.current = queuedWrite;
+    return queuedWrite;
+  }, [requireAuth, user]);
 
   const requestResetProgress = useCallback((setId = 'all', setTitle = '') => {
     if (!requireAuth('Vui lòng đăng nhập trước khi đặt lại tiến trình.')) return;
