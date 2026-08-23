@@ -29,12 +29,10 @@ const shuffleArray = (array) => {
 
 const normalizeChoice = value => String(value || '').trim().toLocaleLowerCase();
 
-export const LearnView = ({ embedded = false, direction: controlledDirection, onDirectionChange } = {}) => {
+export const LearnView = () => {
   const { currentSet, sets, studyCardIds, recordWordResult, navigateTo, showToast } = useApp();
 
-  const [localDirection, setLocalDirection] = useState('en_to_vn');
-  const direction = controlledDirection ?? localDirection;
-  const setDirection = onDirectionChange ?? setLocalDirection;
+  const [direction, setDirection] = useState('en_to_vn'); // 'en_to_vn' | 'vn_to_en' | 'mix' | 'ex_en_to_vn' | 'ex_vn_to_en' | 'ex_mix'
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState(null);
@@ -355,7 +353,7 @@ export const LearnView = ({ embedded = false, direction: controlledDirection, on
 
   if (!quizQuestions || quizQuestions.length === 0) {
     return (
-      <div className={embedded ? 'study-mode-content text-center p-8' : 'study-view container text-center p-8'}>
+      <div className="study-view container text-center p-8">
         <div style={{ padding: '4rem 0' }}>
           <div className="spinner mb-3"></div>
           <p className="text-muted">Đang chuẩn bị câu hỏi trắc nghiệm...</p>
@@ -365,7 +363,7 @@ export const LearnView = ({ embedded = false, direction: controlledDirection, on
   }
 
   return (
-    <div className={embedded ? 'study-mode-content' : 'study-view learn-view container'}>
+    <div className="study-view learn-view container">
       {/* Header */}
       <div className="study-header">
         <button className="btn btn-ghost" onClick={() => navigateTo('home')}>

@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
-export const FlashcardView = ({ embedded = false } = {}) => {
+export const FlashcardView = () => {
   const { currentSet, navigateTo, showToast, recordWordResult } = useApp();
 
   const [cards, setCards] = useState(() => (
@@ -143,7 +143,7 @@ export const FlashcardView = ({ embedded = false } = {}) => {
 
   if (!currentSet || !cards.length) {
     return (
-      <div className={embedded ? 'study-mode-content text-center p-8' : 'container text-center p-8'}>
+      <div className="container text-center p-8">
         <h2>Không tìm thấy bộ từ vựng hoặc bộ từ vựng rỗng!</h2>
         <button type="button" className="btn btn-primary mt-4" onClick={() => navigateTo('home')}>
           Quay lại trang chủ
@@ -155,7 +155,7 @@ export const FlashcardView = ({ embedded = false } = {}) => {
   const currentCard = cards[currentIndex];
 
   return (
-    <div className={embedded ? 'study-mode-content' : 'study-view flashcard-view container'}>
+    <div className="study-view flashcard-view container">
       {/* Top Header & Mode Navigation */}
       <div className="study-header">
         <button type="button" className="btn btn-ghost" onClick={() => navigateTo('home')}>

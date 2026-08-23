@@ -56,15 +56,6 @@
   padding-bottom: 5rem;
 }
 
-.study-mode-panel,
-.study-mode-content {
-  min-width: 0;
-}
-
-.study-mode-content > .study-header {
-  display: none;
-}
-
 /* Shared command header */
 .study-view .study-header,
 .progress-view .study-header {
