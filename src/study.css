@@ -503,6 +503,28 @@
   border: 1px solid rgba(116, 119, 255, 0.18);
 }
 
+.flashcard-results-card {
+  width: min(100%, 700px);
+  margin: 1.5rem auto 0;
+}
+
+.flashcard-results-stats {
+  width: min(100%, 430px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-inline: auto;
+}
+
+.flashcard-results-actions .btn {
+  min-height: 50px;
+}
+
+.flashcard-results-actions .btn:disabled {
+  cursor: not-allowed;
+  transform: none;
+  filter: grayscale(0.25);
+  opacity: 0.55;
+}
+
 /* Learn and Typing activity cards */
 .quiz-card,
 .typing-card,

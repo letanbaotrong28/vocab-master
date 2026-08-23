@@ -9,12 +9,14 @@ import {
   BookOpen, 
   BrainCircuit, 
   Keyboard, 
-  BarChart2
+  BarChart2,
+  Sparkles,
+  RotateCcw
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 export const FlashcardView = () => {
-  const { currentSet, navigateTo, showToast, recordWordResult } = useApp();
+  const { currentSet, navigateTo, showToast } = useApp();
 
   const [cards, setCards] = useState(() => (
     currentSet && Array.isArray(currentSet.cards) ? currentSet.cards : []
@@ -22,6 +24,8 @@ export const FlashcardView = () => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [isShuffled, setIsShuffled] = useState(false);
+  const [isFinished, setIsFinished] = useState(false);
+  const [cardResults, setCardResults] = useState(() => new Map());
   const [isRecording, setIsRecording] = useState(false);
   const recordingRef = React.useRef(false);
   const unlockTimerRef = React.useRef(null);
@@ -37,21 +41,26 @@ export const FlashcardView = () => {
   }, []);
 
   // Flip card handler
-  const handleFlip = () => {
+  const handleFlip = useCallback(() => {
     setIsFlipped(prev => !prev);
-  };
+  }, []);
 
   // Next card
   const handleNext = useCallback(() => {
     setIsFlipped(false);
-    setCurrentIndex(prev => (cards.length > 0 ? (prev < cards.length - 1 ? prev + 1 : 0) : 0));
-  }, [cards.length]);
+    if (cards.length === 0) return;
+    if (currentIndex < cards.length - 1) {
+      setCurrentIndex(currentIndex + 1);
+    } else {
+      setIsFinished(true);
+    }
+  }, [cards.length, currentIndex]);
 
   // Previous card
   const handlePrev = useCallback(() => {
     setIsFlipped(false);
-    setCurrentIndex(prev => (cards.length > 0 ? (prev > 0 ? prev - 1 : cards.length - 1) : 0));
-  }, [cards.length]);
+    setCurrentIndex(prev => Math.max(0, prev - 1));
+  }, []);
 
   // Item 113 Fix: Fisher-Yates Shuffle Algorithm for uniform distribution
   const handleShuffle = () => {
@@ -73,28 +82,56 @@ export const FlashcardView = () => {
     setCurrentIndex(0);
   };
 
-  // Item 112 Fix: Mark card as known or still learning
-  const handleMarkCard = (isCorrect) => {
+  // Flashcard choices are session-only and intentionally do not update learning progress.
+  const handleMarkCard = useCallback((isCorrect) => {
     if (recordingRef.current) return;
     const card = cards[currentIndex];
     if (!card || !currentSet) return;
     recordingRef.current = true;
     setIsRecording(true);
-    try {
-      Promise.resolve(recordWordResult(currentSet.id, card.id, isCorrect)).catch((error) => {
-        showToast(error.message || 'Không thể lưu kết quả thẻ. Kết nối mạng có thể đang gián đoạn.', 'warning', 6000);
-      });
-      showToast(isCorrect ? 'Đã ghi nhận: Đã biết!' : 'Đã ghi nhận: Cần học lại', isCorrect ? 'success' : 'info');
-      handleNext();
-    } catch (e) {
-      showToast(e.message || 'Không thể ghi nhận kết quả thẻ.', 'warning');
-    }
+    setCardResults(previousResults => {
+      const nextResults = new Map(previousResults);
+      nextResults.set(String(card.id), isCorrect);
+      return nextResults;
+    });
+    showToast(isCorrect ? 'Đã chọn: Đã biết!' : 'Đã chọn: Cần học lại', isCorrect ? 'success' : 'info');
+    handleNext();
     unlockTimerRef.current = window.setTimeout(() => {
       recordingRef.current = false;
       setIsRecording(false);
       unlockTimerRef.current = null;
     }, 180);
-  };
+  }, [cards, currentIndex, currentSet, handleNext, showToast]);
+
+  const startReview = useCallback((learningOnly) => {
+    const sourceCards = learningOnly
+      ? cards.filter(card => cardResults.get(String(card.id)) !== true)
+      : (currentSet?.cards || []);
+
+    if (sourceCards.length === 0) {
+      showToast('Không còn từ nào cần học lại.', 'success');
+      return;
+    }
+
+    if (unlockTimerRef.current) {
+      window.clearTimeout(unlockTimerRef.current);
+      unlockTimerRef.current = null;
+    }
+    recordingRef.current = false;
+    setIsRecording(false);
+    setCards([...sourceCards]);
+    setCurrentIndex(0);
+    setIsFlipped(false);
+    setIsShuffled(false);
+    setCardResults(new Map());
+    setIsFinished(false);
+    showToast(
+      learningOnly
+        ? `Bắt đầu ôn lại ${sourceCards.length} từ cần học lại.`
+        : `Bắt đầu ôn lại toàn bộ ${sourceCards.length} thẻ.`,
+      'info'
+    );
+  }, [cardResults, cards, currentSet, showToast]);
 
   // Item 115 Fix: Text-To-Speech with Voice Selection
   const speakEnglish = (e, text) => {
@@ -121,25 +158,27 @@ export const FlashcardView = () => {
   useEffect(() => {
     const handleKeyDown = (e) => {
       const tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || e.target.isContentEditable) {
+      if (e.target.closest?.('[aria-modal="true"]') || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
         return;
       }
 
-      if (e.code === 'Space' || e.code === 'Enter') {
+      if (isFinished) return;
+
+      if (e.code === 'ArrowLeft') {
         e.preventDefault();
-        handleFlip();
+        handleMarkCard(false);
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
-        handleNext();
-      } else if (e.code === 'ArrowLeft') {
+        handleMarkCard(true);
+      } else if ((e.code === 'Space' || e.code === 'Enter') && tag !== 'BUTTON' && tag !== 'A') {
         e.preventDefault();
-        handlePrev();
+        handleFlip();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleNext, handlePrev]);
+  }, [handleFlip, handleMarkCard, isFinished]);
 
   if (!currentSet || !cards.length) {
     return (
@@ -153,6 +192,8 @@ export const FlashcardView = () => {
   }
 
   const currentCard = cards[currentIndex];
+  const learningCards = cards.filter(card => cardResults.get(String(card.id)) !== true);
+  const knownCardCount = cards.length - learningCards.length;
 
   return (
     <div className="study-view flashcard-view container">
@@ -209,6 +250,45 @@ export const FlashcardView = () => {
         </nav>
       </div>
 
+      {isFinished ? (
+        <div className="quiz-results-card flashcard-results-card card-shadow animate-scale-up text-center" role="status" aria-live="polite">
+          <div className="results-trophy-badge">
+            <Sparkles size={36} className="text-warning" />
+          </div>
+          <h2>Hoàn thành lượt thẻ!</h2>
+          <p className="results-subtitle">Bạn đã duyệt qua toàn bộ {cards.length} thẻ trong lượt này.</p>
+
+          <div className="results-stats-row flashcard-results-stats">
+            <div className="result-stat-box success">
+              <span className="stat-num">{knownCardCount}</span>
+              <span className="stat-label">Đã biết</span>
+            </div>
+            <div className="result-stat-box danger">
+              <span className="stat-num">{learningCards.length}</span>
+              <span className="stat-label">Cần học lại</span>
+            </div>
+          </div>
+
+          <div className="results-actions-group flashcard-results-actions">
+            <button
+              type="button"
+              className="btn btn-warning"
+              onClick={() => startReview(true)}
+              disabled={learningCards.length === 0}
+            >
+              <BrainCircuit size={18} />
+              {learningCards.length > 0
+                ? `Ôn lại ${learningCards.length} từ cần học lại`
+                : 'Không còn từ cần học lại'}
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => startReview(false)}>
+              <RotateCcw size={18} />
+              Ôn lại toàn bộ
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Progress Bar & Shuffle Control */}
       <div className="flashcard-toolbar">
         <div className="progress-counter">
@@ -316,8 +396,9 @@ export const FlashcardView = () => {
           type="button"
           className="nav-arrow-btn" 
           onClick={handlePrev}
-          title="Thẻ trước (Mũi tên Trái)"
+          title="Chuyển về thẻ trước"
           aria-label="Chuyển đến thẻ trước"
+          disabled={currentIndex === 0}
         >
           <ChevronLeft size={28} />
         </button>
@@ -351,7 +432,7 @@ export const FlashcardView = () => {
           type="button"
           className="nav-arrow-btn" 
           onClick={handleNext}
-          title="Thẻ tiếp theo (Mũi tên Phải)"
+          title="Chuyển đến thẻ tiếp theo"
           aria-label="Chuyển đến thẻ tiếp theo"
         >
           <ChevronRight size={28} />
@@ -360,9 +441,11 @@ export const FlashcardView = () => {
 
       {/* Shortcuts Helper */}
       <div className="keyboard-shortcuts-hint">
-        <span className="hide-mobile">💡 Mẹo bàn phím: <code>Phím Trái</code> = Trước, <code>Phím Phải</code> = Tiếp, <code>Space</code> = Lật thẻ</span>
+        <span className="hide-mobile">💡 Mẹo bàn phím: <code>Phím Trái</code> = Cần học lại, <code>Phím Phải</code> = Đã biết, <code>Space</code> = Lật thẻ</span>
         <span className="show-mobile-only">💡 Dùng nút Lật thẻ để đổi mặt • Dùng 2 nút mũi tên để chuyển thẻ</span>
       </div>
+        </>
+      )}
     </div>
   );
 };
