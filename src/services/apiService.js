@@ -1,210 +1,224 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
-const TOKEN_KEY = 'vocabmaster_auth_token_v1';
+const LEGACY_TOKEN_KEY = 'vocabmaster_auth_token_v1';
 
-// Item 83 Fix: Exponential Backoff Retry Helper
-export const retryWithBackoff = async (fn, maxRetries = 2, delayMs = 1000) => {
-  let lastErr;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (err.status === 401 || err.status === 403 || err.status === 400 || attempt === maxRetries) {
-        throw err;
-      }
-      await new Promise(res => setTimeout(res, delayMs * Math.pow(2, attempt)));
-    }
+const removeLegacyToken = () => {
+  try {
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+  } catch {
+    // Cookies are the only authentication source. Blocked localStorage is harmless.
   }
-  throw lastErr;
 };
 
-// Centralized Request Handler (Item 64, 66, 67, 68, 84 Fix: Assign error.status, credentials include & timeout cleared after reading body)
+removeLegacyToken();
+
+export const retryWithBackoff = async (fn, maxRetries = 2, delayMs = 600) => {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const shouldStop = [400, 401, 403, 404, 409, 413, 422].includes(error.status);
+      if (shouldStop || attempt === maxRetries) throw error;
+      await new Promise(resolve => setTimeout(resolve, delayMs * (2 ** attempt)));
+    }
+  }
+  throw lastError;
+};
+
 const requestFetch = async (url, options = {}, timeoutMs = 15000) => {
-  if (!navigator.onLine) {
-    const netErr = new Error('Không có kết nối Internet. Vui lòng kiểm tra lại mạng.');
-    netErr.status = 0;
-    throw netErr;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const networkError = new Error('Không có kết nối Internet. Vui lòng kiểm tra lại mạng.');
+    networkError.status = 0;
+    throw networkError;
   }
 
+  const {
+    notifyUnauthorized = true,
+    signal: externalSignal,
+    ...fetchOptions
+  } = options;
   const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
   const controller = new AbortController();
   let didTimeout = false;
-  const abortFromExternalSignal = () => controller.abort(options.signal?.reason);
-  if (options.signal) {
-    if (options.signal.aborted) abortFromExternalSignal();
-    else options.signal.addEventListener('abort', abortFromExternalSignal, { once: true });
+  const abortFromExternalSignal = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) abortFromExternalSignal();
+    else externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true });
   }
+
   const timer = setTimeout(() => {
     didTimeout = true;
     controller.abort();
   }, timeoutMs);
 
   try {
-    const res = await fetch(fullUrl, {
-      ...options,
-      credentials: 'include', // Item 68 Fix: Send HttpOnly cookies with request
+    const response = await fetch(fullUrl, {
+      ...fetchOptions,
+      credentials: 'include',
       signal: controller.signal
     });
 
-    const contentType = res.headers.get('content-type');
-    let data = {};
-    if (contentType && contentType.includes('application/json')) {
-      data = await res.json().catch(() => ({}));
+    const contentType = response.headers.get('content-type') || '';
+    let data;
+    let invalidSuccessPayload = false;
+    if (contentType.includes('application/json')) {
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+        invalidSuccessPayload = response.ok && response.status !== 204;
+      }
     } else {
-      const text = await res.text().catch(() => '');
-      data = { error: text || 'Phản hồi từ máy chủ không ở định dạng JSON.' };
+      const responseText = await response.text().catch(() => '');
+      data = { error: responseText || 'Phản hồi từ máy chủ không ở định dạng JSON.' };
+      invalidSuccessPayload = response.ok && response.status !== 204;
     }
 
-    clearTimeout(timer); // Item 84 Fix: Clear timer ONLY AFTER reading complete response body
+    if (!response.ok) {
+      const error = new Error(data.error || `Yêu cầu thất bại (mã ${response.status}).`);
+      error.status = response.status;
+      error.data = data;
 
-    if (!res.ok) {
-      const err = new Error(data.error || `Yêu cầu thất bại (Mã lỗi ${res.status}).`);
-      err.status = res.status;
-      err.data = data;
-
-      if (res.status === 401 || res.status === 403) {
-        apiService.removeToken();
-        window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { status: res.status, error: data.error } }));
+      // Wrong credentials stay in the auth modal. Only an authenticated API call
+      // is allowed to expire the current session globally.
+      if (response.status === 401 && notifyUnauthorized && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('auth:unauthorized', {
+          detail: { status: response.status, error: data.error }
+        }));
       }
-      throw err;
+      throw error;
+    }
+
+    if (invalidSuccessPayload) {
+      const error = new Error('Máy chủ trả về dữ liệu không hợp lệ. Vui lòng thử lại hoặc kiểm tra cấu hình triển khai.');
+      error.status = 502;
+      throw error;
     }
 
     return data;
-  } catch (err) {
-    clearTimeout(timer);
-    if (err.name === 'AbortError' && didTimeout) {
-      const timeoutErr = new Error(`Yêu cầu tới máy chủ bị quá thời gian (Timeout ${Math.round(timeoutMs / 1000)} giây). Vui lòng thử lại.`);
-      timeoutErr.status = 408;
-      throw timeoutErr;
+  } catch (error) {
+    if (error.name === 'AbortError' && didTimeout) {
+      const timeoutError = new Error(`Máy chủ không phản hồi sau ${Math.round(timeoutMs / 1000)} giây. Vui lòng thử lại.`);
+      timeoutError.status = 408;
+      throw timeoutError;
     }
-    throw err;
+    if (error instanceof TypeError) {
+      const networkError = new Error('Không thể kết nối tới máy chủ. Vui lòng kiểm tra mạng rồi thử lại.');
+      networkError.status = 0;
+      networkError.cause = error;
+      throw networkError;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
-    options.signal?.removeEventListener('abort', abortFromExternalSignal);
+    externalSignal?.removeEventListener('abort', abortFromExternalSignal);
   }
 };
 
+const jsonHeaders = () => ({
+  'Content-Type': 'application/json',
+  'X-Requested-With': 'XMLHttpRequest'
+});
+
+const withLocalDate = (path, localDate) => (
+  localDate ? `${path}?localDate=${encodeURIComponent(localDate)}` : path
+);
+
 export const apiService = {
-  getToken: () => localStorage.getItem(TOKEN_KEY),
-  setToken: (token) => localStorage.setItem(TOKEN_KEY, token),
-  removeToken: () => localStorage.removeItem(TOKEN_KEY),
+  getAuthHeaders: jsonHeaders,
 
-  getAuthHeaders: () => {
-    const token = apiService.getToken();
-    return {
-      'Content-Type': 'application/json',
-      'X-Requested-With': 'XMLHttpRequest', // Item 29 CSRF Header
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    };
-  },
+  register: (username, password, localDate) => requestFetch('/api/auth/register', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ username, password, localDate }),
+    notifyUnauthorized: false
+  }),
 
-  // Auth APIs
-  register: async (username, password) => {
-    const data = await requestFetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-      body: JSON.stringify({ username, password })
-    });
-    if (data.token) apiService.setToken(data.token);
-    return data;
-  },
+  login: (username, password, localDate) => requestFetch('/api/auth/login', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ username, password, localDate }),
+    notifyUnauthorized: false
+  }),
 
-  login: async (username, password) => {
-    const data = await requestFetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-      body: JSON.stringify({ username, password })
-    });
-    if (data.token) apiService.setToken(data.token);
-    return data;
-  },
-
-  // Item 65 Fix: Differentiate 401/403 from 500/Network error in getMe
-  getMe: async () => {
+  getMe: async (localDate) => {
     try {
-      const data = await requestFetch('/api/auth/me', {
-        headers: apiService.getAuthHeaders()
+      return await requestFetch(withLocalDate('/api/auth/me', localDate), {
+        headers: jsonHeaders(),
+        notifyUnauthorized: false
       });
-      return data.user;
-    } catch (err) {
-      if (err.status === 401 || err.status === 403) {
-        apiService.removeToken();
-        return null;
-      }
-      // Re-throw 500 or Network errors so app does NOT drop user to offline local mode erroneously
-      throw err;
+    } catch (error) {
+      if (error.status === 401 || error.status === 404) return null;
+      throw error;
     }
   },
 
-  changePassword: async (oldPassword, newPassword) => {
-    const data = await requestFetch('/api/auth/change-password', {
-      method: 'POST',
-      headers: apiService.getAuthHeaders(),
-      body: JSON.stringify({ oldPassword, newPassword })
-    });
-    if (data.token) apiService.setToken(data.token);
-    return data;
-  },
+  changePassword: (oldPassword, newPassword) => requestFetch('/api/auth/change-password', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ oldPassword, newPassword })
+  }),
 
-  logout: async () => {
-    try {
-      await requestFetch('/api/auth/logout', {
-        method: 'POST',
-        headers: apiService.getAuthHeaders()
-      });
-    } catch (e) {
-      console.error('Logout request failed:', e);
-    } finally {
-      apiService.removeToken();
-      window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { status: 401 } }));
-    }
-  },
+  logout: () => requestFetch('/api/auth/logout', {
+    method: 'POST',
+    headers: jsonHeaders()
+  }),
 
-  // Sets APIs
   getSets: async () => {
-    const data = await requestFetch('/api/sets', {
-      headers: apiService.getAuthHeaders()
-    });
-    return data.sets;
+    const data = await requestFetch('/api/sets', { headers: jsonHeaders() });
+    return Array.isArray(data.sets) ? data.sets : [];
   },
 
-  saveSet: async (setData) => {
-    return await requestFetch('/api/sets', {
-      method: 'POST',
-      headers: apiService.getAuthHeaders(),
-      body: JSON.stringify(setData)
-    });
+  saveSet: (setData) => requestFetch('/api/sets', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(setData)
+  }),
+
+  deleteSet: (setId, expectedUpdatedAt) => requestFetch(`/api/sets/${encodeURIComponent(setId)}`, {
+    method: 'DELETE',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ expectedUpdatedAt })
+  }),
+
+  syncBatchSets: async (sets, { chunkSize = 200 } = {}) => {
+    if (!Array.isArray(sets)) throw new Error('Danh sách bộ từ vựng không hợp lệ.');
+    if (sets.length === 0) return apiService.getSets();
+
+    for (const set of sets) {
+      if (!Array.isArray(set?.cards) || set.cards.length === 0) {
+        throw new Error(`Bộ từ "${set?.title || 'không tên'}" cần ít nhất một thẻ.`);
+      }
+      if (set.cards.length > 1000) {
+        throw new Error(`Bộ từ "${set.title || 'không tên'}" vượt giới hạn 1.000 thẻ.`);
+      }
+    }
+
+    let serverSets = [];
+    const safeChunkSize = Math.max(1, Math.min(200, chunkSize));
+    for (let start = 0; start < sets.length; start += safeChunkSize) {
+      const chunk = sets.slice(start, start + safeChunkSize);
+      const data = await requestFetch('/api/sets/sync-batch', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ sets: chunk })
+      }, 30000);
+      serverSets = Array.isArray(data.sets) ? data.sets : serverSets;
+    }
+    return serverSets;
   },
 
-  deleteSet: async (setId) => {
-    return await requestFetch(`/api/sets/${encodeURIComponent(setId)}`, {
-      method: 'DELETE',
-      headers: apiService.getAuthHeaders()
-    });
-  },
+  recordWordStats: (setId, cardId, isCorrect, studyDate) => requestFetch('/api/sets/word-stats', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ setId, cardId, isCorrect, studyDate })
+  }),
 
-  syncBatchSets: async (sets) => {
-    const data = await requestFetch('/api/sets/sync-batch', {
-      method: 'POST',
-      headers: apiService.getAuthHeaders(),
-      body: JSON.stringify({ sets })
-    });
-    return data.sets;
-  },
-
-  recordWordStats: async (setId, cardId, isCorrect) => {
-    return await requestFetch('/api/sets/word-stats', {
-      method: 'POST',
-      headers: apiService.getAuthHeaders(),
-      body: JSON.stringify({ setId, cardId, isCorrect })
-    });
-  },
-
-  resetProgress: async (setId) => {
-    return await requestFetch('/api/sets/reset-progress', {
-      method: 'POST',
-      headers: apiService.getAuthHeaders(),
-      body: JSON.stringify({ setId })
-    });
-  }
+  resetProgress: (setId) => requestFetch('/api/sets/reset-progress', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ setId })
+  })
 };

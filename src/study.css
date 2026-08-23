@@ -12,15 +12,15 @@
   --study-border: #d7dfeb;
   --study-border-strong: #c2cddd;
   --study-muted: #64748b;
-  --study-indigo: #5b5cf0;
-  --study-indigo-bright: #7477ff;
+  --study-indigo: #4f46e5;
+  --study-indigo-bright: #4338ca;
   --study-indigo-soft: rgba(91, 92, 240, 0.1);
-  --study-violet: #8b5cf6;
-  --study-green: #10b981;
+  --study-violet: #7c3aed;
+  --study-green: #047857;
   --study-green-soft: rgba(16, 185, 129, 0.1);
-  --study-red: #ef476f;
+  --study-red: #b91c1c;
   --study-red-soft: rgba(239, 71, 111, 0.1);
-  --study-amber: #f59e0b;
+  --study-amber: #92400e;
   --study-amber-soft: rgba(245, 158, 11, 0.11);
   --study-shadow: 0 18px 45px rgba(15, 23, 42, 0.1);
   --study-shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.07);
@@ -137,7 +137,7 @@
   width: fit-content;
   padding: 0.24rem 0.65rem;
   border: 1px solid rgba(116, 119, 255, 0.22);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1.25;
   letter-spacing: 0.025em;
 }
@@ -221,7 +221,7 @@
 }
 
 .nav-mode-label {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 750;
 }
 
@@ -280,16 +280,12 @@
   max-height: 58vh;
   margin: 0 auto 1.2rem;
   perspective: 1500px;
+  cursor: default;
 }
 
 .flashcard-3d {
   border-radius: 24px;
   transition: transform 0.58s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.flashcard-3d:focus-visible {
-  outline: 3px solid var(--study-indigo-bright);
-  outline-offset: 5px;
 }
 
 .flashcard-view .card-face {
@@ -302,6 +298,10 @@
   border: 1px solid var(--study-border-strong);
   border-radius: 24px;
   box-shadow: var(--study-shadow);
+}
+
+.flashcard-view .card-face[aria-hidden='true'] {
+  pointer-events: none;
 }
 
 .flashcard-view .card-face::after {
@@ -336,7 +336,7 @@
   color: var(--study-indigo-bright);
   background: var(--study-indigo-soft);
   border: 1px solid rgba(116, 119, 255, 0.24);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   letter-spacing: 0.09em;
 }
 
@@ -1251,7 +1251,7 @@
     display: block;
     max-width: 100%;
     overflow: hidden;
-    font-size: 0.58rem;
+    font-size: 0.75rem;
     text-overflow: ellipsis;
   }
 
@@ -1285,7 +1285,7 @@
   }
 
   .flip-hint {
-    font-size: 0.7rem !important;
+    font-size: 0.75rem !important;
   }
 
   .flashcard-navigation {
@@ -1381,7 +1381,7 @@
   }
 
   .result-stat-box .stat-label {
-    font-size: 0.66rem;
+    font-size: 0.75rem;
   }
 
   .results-actions-group {
@@ -1493,7 +1493,7 @@
   .stats-table tbody td::before {
     content: attr(data-label);
     color: var(--study-muted);
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     font-weight: 750;
     letter-spacing: 0.025em;
     text-align: left;

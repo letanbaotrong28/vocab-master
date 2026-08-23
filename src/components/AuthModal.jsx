@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, User, Lock, Eye, EyeOff, LogIn, UserPlus, ShieldCheck, AlertCircle } from 'lucide-react';
 import { useApp } from '../context/useApp';
+import { useModalAccessibility } from './useModalAccessibility';
 
 export const AuthModal = () => {
   const { isAuthModalOpen, setIsAuthModalOpen, loginUser, registerUser } = useApp();
@@ -12,30 +13,9 @@ export const AuthModal = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  React.useEffect(() => {
-    if (!isAuthModalOpen) return undefined;
-
-    const previousOverflow = document.body.style.overflow;
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape' && !loading) {
-        setUsername('');
-        setPassword('');
-        setConfirmPassword('');
-        setShowPassword(false);
-        setError('');
-        setIsAuthModalOpen(false);
-      }
-    };
-    document.body.style.overflow = 'hidden';
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isAuthModalOpen, loading, setIsAuthModalOpen]);
-
-  if (!isAuthModalOpen) return null;
+  const usernameInputRef = React.useRef(null);
+  const loginTabRef = React.useRef(null);
+  const registerTabRef = React.useRef(null);
 
   // Item 31 & 32 Fix: Reset form & showPassword state on close or switch
   const resetForm = () => {
@@ -53,10 +33,36 @@ export const AuthModal = () => {
     setIsAuthModalOpen(false);
   };
 
+  const dialogRef = useModalAccessibility({
+    isOpen: isAuthModalOpen,
+    onClose: handleClose,
+    canClose: !loading,
+    initialFocusRef: usernameInputRef
+  });
+
+  if (!isAuthModalOpen) return null;
+
   const switchTab = (newMode) => {
     if (loading) return;
     setMode(newMode);
     resetForm();
+  };
+
+  const handleTabKeyDown = (event) => {
+    let nextMode = null;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      nextMode = mode === 'login' ? 'register' : 'login';
+    } else if (event.key === 'Home') {
+      nextMode = 'login';
+    } else if (event.key === 'End') {
+      nextMode = 'register';
+    }
+    if (!nextMode) return;
+    event.preventDefault();
+    switchTab(nextMode);
+    window.requestAnimationFrame(() => {
+      (nextMode === 'login' ? loginTabRef : registerTabRef).current?.focus();
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -108,12 +114,20 @@ export const AuthModal = () => {
   return (
     <div 
       className="modal-backdrop" 
-      onClick={handleClose}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="auth-modal-title"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) handleClose();
+      }}
     >
-      <div className="modal-content animate-scale-up auth-modal-card" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="modal-content animate-scale-up auth-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-modal-title"
+        aria-describedby="auth-modal-description"
+        aria-busy={loading}
+        tabIndex={-1}
+      >
         <div className="modal-header">
           <div className="modal-title-group">
             <div className="modal-icon-badge primary">
@@ -123,28 +137,45 @@ export const AuthModal = () => {
               <h3 id="auth-modal-title" className="modal-title">
                 {mode === 'login' ? 'Đăng Nhập Tài Khoản' : 'Tạo Tài Khoản Mới'}
               </h3>
+              <p id="auth-modal-description" className="modal-subtitle">
+                {mode === 'login' ? 'Đăng nhập để đồng bộ bộ từ vựng.' : 'Tạo tài khoản để lưu và đồng bộ tiến trình.'}
+              </p>
             </div>
           </div>
-          <button className="btn-icon" onClick={handleClose} disabled={loading} aria-label="Đóng bảng đăng nhập">
+          <button type="button" className="btn-icon" onClick={handleClose} disabled={loading} aria-label="Đóng bảng đăng nhập">
             <X size={20} />
           </button>
         </div>
 
         {/* Navigation Tabs */}
-        <div className="modal-tabs-nav">
+        <div className="modal-tabs-nav" role="tablist" aria-label="Chọn hình thức xác thực">
           <button
+            ref={loginTabRef}
+            id="auth-login-tab"
             type="button"
+            role="tab"
+            aria-selected={mode === 'login'}
+            aria-controls="auth-form-panel"
+            tabIndex={mode === 'login' ? 0 : -1}
             className={`modal-tab-btn ${mode === 'login' ? 'active' : ''}`}
             onClick={() => switchTab('login')}
+            onKeyDown={handleTabKeyDown}
             disabled={loading}
           >
             <LogIn size={16} />
             Đăng Nhập
           </button>
           <button
+            ref={registerTabRef}
+            id="auth-register-tab"
             type="button"
+            role="tab"
+            aria-selected={mode === 'register'}
+            aria-controls="auth-form-panel"
+            tabIndex={mode === 'register' ? 0 : -1}
             className={`modal-tab-btn ${mode === 'register' ? 'active' : ''}`}
             onClick={() => switchTab('register')}
+            onKeyDown={handleTabKeyDown}
             disabled={loading}
           >
             <UserPlus size={16} />
@@ -152,20 +183,26 @@ export const AuthModal = () => {
           </button>
         </div>
 
-        <div className="modal-body">
+        <div
+          id="auth-form-panel"
+          className="modal-body"
+          role="tabpanel"
+          aria-labelledby={mode === 'login' ? 'auth-login-tab' : 'auth-register-tab'}
+        >
           {error && (
-            <div className="error-alert mb-3" role="alert">
+            <div id="auth-form-error" className="error-alert mb-3" role="alert">
               <AlertCircle size={16} />
               <span>{error}</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="auth-form">
+          <form onSubmit={handleSubmit} className="auth-form" aria-describedby={error ? 'auth-form-error' : undefined} noValidate>
             <div className="form-group">
               <label htmlFor="auth-username" className="form-label">Tên tài khoản</label>
               <div className="input-icon-wrapper">
                 <User size={18} className="input-icon" />
                 <input
+                  ref={usernameInputRef}
                   id="auth-username"
                   type="text"
                   className="form-input with-icon"
@@ -174,7 +211,8 @@ export const AuthModal = () => {
                   onChange={(e) => setUsername(e.target.value)}
                   disabled={loading}
                   autoComplete="username"
-                  autoFocus
+                  required
+                  aria-invalid={Boolean(error && !username.trim())}
                 />
               </div>
             </div>
@@ -192,6 +230,7 @@ export const AuthModal = () => {
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={loading}
                   autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  required
                 />
                 <button
                   type="button"
@@ -218,6 +257,8 @@ export const AuthModal = () => {
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     disabled={loading}
+                    autoComplete="new-password"
+                    required
                   />
                 </div>
               </div>
@@ -251,7 +292,7 @@ export const AuthModal = () => {
               ? 'Chưa có tài khoản? Chuyển sang tab Đăng ký để tạo mới.'
               : 'Đã có tài khoản? Chuyển sang tab Đăng nhập.'}
           </span>
-          <button className="btn btn-secondary" onClick={handleClose} disabled={loading}>
+          <button type="button" className="btn btn-secondary" onClick={handleClose} disabled={loading}>
             Đóng
           </button>
         </div>

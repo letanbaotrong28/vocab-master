@@ -28,7 +28,7 @@ const shuffleArray = (array) => {
 };
 
 export const TypingView = () => {
-  const { currentSet, navigateTo, recordWordResult } = useApp();
+  const { currentSet, navigateTo, recordWordResult, showToast } = useApp();
 
   const [direction, setDirection] = useState('vn_to_en');
   const [cards, setCards] = useState([]);
@@ -39,9 +39,13 @@ export const TypingView = () => {
   const [results, setResults] = useState({ correct: 0, wrong: 0, history: [] });
   const [isFinished, setIsFinished] = useState(false);
   const [isComposing, setIsComposing] = useState(false); // Item 122 Fix: IME Composition handling
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   const inputRef = useRef(null);
-  const typingSourceJson = JSON.stringify({
+  // Snapshot vocabulary once for this keyed study session. Recording progress
+  // changes card stats, but should not rebuild/serialize the question source.
+  const [typingSourceJson] = useState(() => JSON.stringify({
     id: currentSet?.id ?? null,
     cards: (currentSet?.cards || []).map(card => ({
       id: card.id,
@@ -50,7 +54,7 @@ export const TypingView = () => {
       example: card.example,
       exampleTranslation: card.exampleTranslation
     }))
-  });
+  }));
 
   // Item 60 Fix: Enhanced string normalization (replaces hyphens with space, strips quotes/punctuation)
   const normalize = (str) => {
@@ -119,7 +123,8 @@ export const TypingView = () => {
         expected,
         promptLang,
         expectedLang,
-        isVnToEn
+        isVnToEn,
+        isExampleMode: modeType.startsWith('ex_')
       };
     });
 
@@ -149,6 +154,7 @@ export const TypingView = () => {
   // Keep hooks unconditional so invalid/deferred routes cannot change hook order.
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (e.target.closest?.('[aria-modal="true"]')) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         navigateTo('home');
@@ -177,17 +183,30 @@ export const TypingView = () => {
 
   const handleCheckAnswer = async (e) => {
     if (e) e.preventDefault();
-    if (isComposing || isAnswered || !currentItem) return;
+    if (isComposing || isAnswered || submittingRef.current || !currentItem) return;
 
     const userClean = normalize(inputWord);
 
-    // Item 61 Fix: Synonym matching (splits expected answers by comma / slash / semicolon)
-    const acceptedAnswers = currentItem.expected
-      .split(/[,/;/]/)
+    // A comma in an example sentence is punctuation, not an answer separator.
+    const answerSources = currentItem.isExampleMode
+      ? [currentItem.expected]
+      : currentItem.expected.split(/[,;/]/);
+    const acceptedAnswers = answerSources
       .map(ans => normalize(ans))
       .filter(Boolean);
 
     const correct = acceptedAnswers.some(targetClean => targetClean === userClean);
+
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await recordWordResult(currentSet.id, currentItem.card.id, correct);
+    } catch (error) {
+      showToast(error.message || 'Không thể lưu kết quả. Vui lòng thử lại.', 'warning');
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      return;
+    }
 
     setIsCorrect(correct);
     setIsAnswered(true);
@@ -207,18 +226,23 @@ export const TypingView = () => {
       ]
     }));
 
-    try {
-      if (recordWordResult && currentSet) {
-        await recordWordResult(currentSet.id, currentItem.card.id, correct);
-      }
-    } catch (err) {
-      console.error('Error recording word result:', err);
-    }
+    submittingRef.current = false;
+    setIsSubmitting(false);
   };
 
   // Item 63 Fix: Skip / Don't know button
   const handleSkipQuestion = async () => {
-    if (isAnswered) return;
+    if (isAnswered || submittingRef.current || !currentItem) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await recordWordResult(currentSet.id, currentItem.card.id, false);
+    } catch (error) {
+      showToast(error.message || 'Không thể lưu kết quả. Vui lòng thử lại.', 'warning');
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      return;
+    }
     setInputWord('');
     setIsCorrect(false);
     setIsAnswered(true);
@@ -238,11 +262,8 @@ export const TypingView = () => {
       ]
     }));
 
-    try {
-      await recordWordResult(currentSet.id, currentItem.card.id, false);
-    } catch (err) {
-      console.error('Error recording skipped word result:', err);
-    }
+    submittingRef.current = false;
+    setIsSubmitting(false);
   };
 
   const handleNext = () => {
@@ -252,7 +273,7 @@ export const TypingView = () => {
       setIsAnswered(false);
     } else {
       setIsFinished(true);
-      if (results.correct > cards.length / 2) {
+      if (results.correct > cards.length / 2 && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
       }
     }
@@ -417,7 +438,9 @@ export const TypingView = () => {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && isComposing) e.preventDefault();
                 }}
-                disabled={isAnswered}
+                disabled={isAnswered || isSubmitting}
+                aria-invalid={isAnswered && !isCorrect}
+                aria-describedby={isAnswered ? 'typing-answer-feedback' : undefined}
                 autoComplete="off"
                 autoCorrect="off"
                 autoCapitalize="off"
@@ -427,7 +450,7 @@ export const TypingView = () => {
 
             {/* Answer Feedback Banner */}
             {isAnswered && (
-              <div className={`answer-feedback-banner ${isCorrect ? 'correct' : 'wrong'} animate-slide-down`} role="status" aria-live="polite">
+              <div id="typing-answer-feedback" className={`answer-feedback-banner ${isCorrect ? 'correct' : 'wrong'} animate-slide-down`} role="status" aria-live="polite" aria-atomic="true">
                 <div className="feedback-icon-title">
                   {isCorrect ? (
                     <>
@@ -452,6 +475,7 @@ export const TypingView = () => {
                     className="icon-btn-subtle ml-auto"
                     onClick={() => speakTarget(currentItem.expected)}
                     title="Nghe phát âm đáp án"
+                    aria-label={`Nghe phát âm đáp án ${currentItem.expected}`}
                   >
                     <Volume2 size={20} />
                   </button>
@@ -467,6 +491,7 @@ export const TypingView = () => {
                     type="button" 
                     className="btn btn-secondary"
                     onClick={handleSkipQuestion}
+                    disabled={isSubmitting}
                   >
                     <HelpCircle size={18} />
                     Không biết / Xem đáp án
@@ -474,7 +499,7 @@ export const TypingView = () => {
                   <button 
                     type="submit" 
                     className="btn btn-primary ml-auto"
-                    disabled={!inputWord.trim()}
+                    disabled={!inputWord.trim() || isSubmitting}
                   >
                     Kiểm tra đáp án (Enter)
                   </button>

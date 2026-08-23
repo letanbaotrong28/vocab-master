@@ -28,6 +28,8 @@ dist-ssr
 .env.*
 !.env.example
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 database.db
 server/database.db
-

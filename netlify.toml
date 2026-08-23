@@ -2,10 +2,11 @@
   command = "npm run build"
   publish = "dist"
 
-# Item 149 Fix: Netlify API Proxy Redirect for SPA production backend
+# Netlify frontend proxy to the current Render backend.
+# Update this URL if the Render service name changes.
 [[redirects]]
   from = "/api/*"
-  to = "https://vocabmaster-server.onrender.com/api/:splat"
+  to = "https://vocab-master-z1et.onrender.com/api/:splat"
   status = 200
   force = true
 

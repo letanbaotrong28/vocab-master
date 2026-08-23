@@ -1,51 +1,40 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { getOne, run, withTransaction } from './db.js';
+import { getOne, isPg, run, withTransaction } from './db.js';
 import { JWT_SECRET, authenticateToken } from './authMiddleware.js';
+import { createMemoryRateLimiter } from './rateLimit.js';
+import { getStreakSnapshot, validateClientDate } from './streak.js';
 
 const router = express.Router();
 
-// Item 80 Fix: Trust proxy IP resolution & rate limiter RAM map cleanup interval
-const rateLimitMap = new Map();
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, record] of rateLimitMap.entries()) {
-    if (now > record.resetTime) {
-      rateLimitMap.delete(ip);
-    }
-  }
-}, 10 * 60 * 1000);
-
-const authRateLimiter = (maxRequests = 10, windowMs = 60000) => (req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
-  const now = Date.now();
-  const userRecord = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs };
-
-  if (now > userRecord.resetTime) {
-    userRecord.count = 1;
-    userRecord.resetTime = now + windowMs;
-  } else {
-    userRecord.count += 1;
-  }
-
-  rateLimitMap.set(ip, userRecord);
-
-  if (userRecord.count > maxRequests) {
-    return res.status(429).json({ error: 'Quá nhiều yêu cầu đăng nhập/đăng ký. Vui lòng thử lại sau 1 phút.' });
-  }
-  next();
+const authLimiterOptions = {
+  maxRequests: 10,
+  windowMs: 60000,
+  key: (req) => req.ip || 'unknown',
+  message: 'Quá nhiều yêu cầu xác thực. Vui lòng thử lại sau 1 phút.'
 };
+// Separate stores prevent registration traffic from consuming login attempts.
+const registerRateLimiter = createMemoryRateLimiter(authLimiterOptions);
+const loginRateLimiter = createMemoryRateLimiter(authLimiterOptions);
 
 // Item 69, 70, 81 Fix: Secure Cookie Setter & JWT Issuer/Audience Signer
-const setAuthTokenCookie = (res, token) => {
-  res.cookie('token', token, {
+const authCookieOptions = () => ({
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000
-  });
+});
+
+const setAuthTokenCookie = (res, token) => {
+  res.cookie('token', token, authCookieOptions());
+};
+
+const clearAuthTokenCookie = (res) => {
+  const clearOptions = authCookieOptions();
+  delete clearOptions.maxAge;
+  res.clearCookie('token', clearOptions);
 };
 
 const signToken = (payload) => {
@@ -57,10 +46,25 @@ const signToken = (payload) => {
   });
 };
 
+const resolveLocalDate = (value) => validateClientDate(value);
+
+const serializeStreak = (user, localDate) => getStreakSnapshot(
+  user.streak_count,
+  user.last_study_date,
+  localDate
+);
+
+const serializeUser = (user, streak) => ({
+  id: user.id,
+  username: user.username,
+  ...(user.created_at !== undefined ? { created_at: user.created_at } : {}),
+  streak
+});
+
 // Register new account
-router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
+router.post('/register', registerRateLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, localDate } = req.body || {};
 
     if (typeof username !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Tên tài khoản và mật khẩu phải là chuỗi văn bản.' });
@@ -80,6 +84,17 @@ router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
     if (password.length < 6 || password.length > 100) {
       return res.status(400).json({ error: 'Mật khẩu phải từ 6 đến 100 ký tự.' });
     }
+    if (bcrypt.truncates(password)) {
+      return res.status(400).json({
+        error: 'Mật khẩu không được vượt quá 72 byte UTF-8.',
+        code: 'PASSWORD_TOO_LONG'
+      });
+    }
+
+    const dateResult = resolveLocalDate(localDate);
+    if (dateResult.error) {
+      return res.status(400).json({ error: dateResult.error, code: 'INVALID_LOCAL_DATE' });
+    }
 
     try {
       const passwordHash = await bcrypt.hash(password, 10);
@@ -95,10 +110,11 @@ router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
 
       setAuthTokenCookie(res, token);
 
-      return res.json({
+      const streak = { count: 0, lastStudyDate: null };
+      return res.status(201).json({
         message: 'Đăng ký tài khoản thành công!',
-        user: { id: userId, username: cleanUsername },
-        token
+        user: serializeUser({ id: userId, username: cleanUsername }, streak),
+        streak
       });
     } catch (dbErr) {
       if (dbErr.message && (dbErr.message.includes('UNIQUE') || dbErr.message.includes('duplicate') || dbErr.code === '23505')) {
@@ -113,9 +129,9 @@ router.post('/register', authRateLimiter(10, 60000), async (req, res) => {
 });
 
 // Login
-router.post('/login', authRateLimiter(10, 60000), async (req, res) => {
+router.post('/login', loginRateLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, localDate } = req.body || {};
 
     if (typeof username !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Tên tài khoản và mật khẩu phải là chuỗi văn bản.' });
@@ -125,6 +141,11 @@ router.post('/login', authRateLimiter(10, 60000), async (req, res) => {
 
     if (!cleanUsername || !password) {
       return res.status(400).json({ error: 'Vui lòng nhập tên tài khoản và mật khẩu.' });
+    }
+
+    const dateResult = resolveLocalDate(localDate);
+    if (dateResult.error) {
+      return res.status(400).json({ error: dateResult.error, code: 'INVALID_LOCAL_DATE' });
     }
 
     const user = await getOne('SELECT * FROM users WHERE LOWER(username) = ?', [cleanUsername]);
@@ -144,10 +165,14 @@ router.post('/login', authRateLimiter(10, 60000), async (req, res) => {
 
     setAuthTokenCookie(res, token);
 
+    const streak = serializeStreak(user, dateResult.date);
+    const passwordNeedsUpgrade = bcrypt.truncates(password);
+
     return res.json({
       message: 'Đăng nhập thành công!',
-      user: { id: user.id, username: user.username },
-      token
+      user: serializeUser(user, streak),
+      streak,
+      passwordNeedsUpgrade
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -158,11 +183,20 @@ router.post('/login', authRateLimiter(10, 60000), async (req, res) => {
 // Get current user info from token
 router.get('/me', authenticateToken, async (req, res) => {
   try {
-    const user = await getOne('SELECT id, username, created_at FROM users WHERE id = ?', [req.user.id]);
+    const dateResult = resolveLocalDate(req.query.localDate);
+    if (dateResult.error) {
+      return res.status(400).json({ error: dateResult.error, code: 'INVALID_LOCAL_DATE' });
+    }
+
+    const user = await getOne(
+      'SELECT id, username, streak_count, last_study_date, created_at FROM users WHERE id = ?',
+      [req.user.id]
+    );
     if (!user) {
       return res.status(404).json({ error: 'Không tìm thấy người dùng.' });
     }
-    return res.json({ user });
+    const streak = serializeStreak(user, dateResult.date);
+    return res.json({ user: serializeUser(user, streak), streak });
   } catch (err) {
     console.error('Get current user error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ.' });
@@ -172,13 +206,22 @@ router.get('/me', authenticateToken, async (req, res) => {
 // Item 77 Fix: Change Password Endpoint issuing fresh token
 router.post('/change-password', authenticateToken, async (req, res) => {
   try {
-    const { oldPassword, newPassword } = req.body;
+    const { oldPassword, newPassword } = req.body || {};
     if (typeof oldPassword !== 'string' || typeof newPassword !== 'string') {
       return res.status(400).json({ error: 'Dữ liệu mật khẩu không hợp lệ.' });
+    }
+    if (oldPassword.length > 100) {
+      return res.status(400).json({ error: 'Mật khẩu hiện tại không hợp lệ.' });
     }
 
     if (newPassword.length < 6 || newPassword.length > 100) {
       return res.status(400).json({ error: 'Mật khẩu mới phải từ 6 đến 100 ký tự.' });
+    }
+    if (bcrypt.truncates(newPassword)) {
+      return res.status(400).json({
+        error: 'Mật khẩu mới không được vượt quá 72 byte UTF-8.',
+        code: 'PASSWORD_TOO_LONG'
+      });
     }
 
     const user = await getOne('SELECT * FROM users WHERE id = ?', [req.user.id]);
@@ -192,13 +235,24 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(newPassword, 10);
-    const newVersion = (user.token_version || 1) + 1;
-    await run('UPDATE users SET password_hash = ?, token_version = ? WHERE id = ?', [newHash, newVersion, req.user.id]);
+    const oldVersion = user.token_version || 1;
+    const newVersion = oldVersion + 1;
+    const updateResult = await run(
+      `UPDATE users SET password_hash = ?, token_version = ?
+       WHERE id = ? AND password_hash = ? AND token_version = ?`,
+      [newHash, newVersion, req.user.id, user.password_hash, oldVersion]
+    );
+    if (updateResult.changes !== 1) {
+      return res.status(409).json({
+        error: 'Tài khoản vừa được thay đổi ở một phiên khác. Vui lòng đăng nhập lại.',
+        code: 'PASSWORD_CHANGE_CONFLICT'
+      });
+    }
 
     const newToken = signToken({ id: user.id, username: user.username, tokenVersion: newVersion });
     setAuthTokenCookie(res, newToken);
 
-    return res.json({ message: 'Đổi mật khẩu thành công! Mật khẩu đã được cập nhật.', token: newToken });
+    return res.json({ message: 'Đổi mật khẩu thành công! Mật khẩu đã được cập nhật.' });
   } catch (err) {
     console.error('Change password error:', err);
     return res.status(500).json({ error: 'Lỗi máy chủ khi đổi mật khẩu.' });
@@ -209,7 +263,7 @@ router.post('/change-password', authenticateToken, async (req, res) => {
 router.post('/logout-all', authenticateToken, async (req, res) => {
   try {
     await run('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [req.user.id]);
-    res.clearCookie('token');
+    clearAuthTokenCookie(res);
     return res.json({ message: 'Đã đăng xuất thành công khỏi tất cả thiết bị!' });
   } catch (err) {
     console.error('Logout all devices error:', err);
@@ -217,15 +271,10 @@ router.post('/logout-all', authenticateToken, async (req, res) => {
   }
 });
 
-// Logout this browser session. Use /logout-all when every issued JWT must be revoked.
-router.post('/logout', authenticateToken, async (req, res) => {
-  try {
-    res.clearCookie('token');
-    return res.json({ message: 'Đã đăng xuất thành công.' });
-  } catch (err) {
-    console.error('Logout error:', err);
-    return res.status(500).json({ error: 'Lỗi máy chủ khi đăng xuất.' });
-  }
+// Cookie logout is intentionally idempotent, including when the cookie expired.
+router.post('/logout', (req, res) => {
+  clearAuthTokenCookie(res);
+  return res.json({ message: 'Đã đăng xuất thành công.' });
 });
 
 // Item 150 Fix: Complete Account & Data Deletion Endpoint
@@ -233,10 +282,17 @@ router.delete('/account', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     await withTransaction(async (tx) => {
+      await tx.getOne(`SELECT id FROM users WHERE id = ?${isPg ? ' FOR UPDATE' : ''}`, [userId]);
+      await tx.query(`SELECT id FROM vocab_sets WHERE user_id = ?${isPg ? ' FOR UPDATE' : ''}`, [userId]);
+      // Explicit cleanup also protects installations created before cascade
+      // constraints were normalized by the current migration.
+      await tx.run('DELETE FROM card_progress WHERE user_id = ?', [userId]);
+      await tx.run('DELETE FROM cards WHERE set_id IN (SELECT id FROM vocab_sets WHERE user_id = ?)', [userId]);
+      await tx.run('DELETE FROM vocab_sets WHERE user_id = ?', [userId]);
       await tx.run('DELETE FROM users WHERE id = ?', [userId]);
     });
 
-    res.clearCookie('token');
+    clearAuthTokenCookie(res);
     return res.json({ message: 'Đã xóa toàn bộ tài khoản và dữ liệu cá nhân thành công.' });
   } catch (err) {
     console.error('Delete account error:', err);

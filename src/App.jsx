@@ -27,6 +27,16 @@ const ViewFallback = () => (
 
 const MainContent = () => {
   const { activeView, currentSetId, toast, confirmModal, setConfirmModal, isAuthLoading } = useApp();
+  const mainContentRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (isAuthLoading) return undefined;
+    const animationFrame = window.requestAnimationFrame(() => {
+      if (document.querySelector('[aria-modal="true"]')) return;
+      mainContentRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [activeView, currentSetId, isAuthLoading]);
 
   // Item 110 Fix: Loading Splash Screen during initial Auth Check
   if (isAuthLoading) {
@@ -45,7 +55,7 @@ const MainContent = () => {
   return (
     <div className="app-layout">
       <Header />
-      <main className="main-body">
+      <main ref={mainContentRef} className="main-body" tabIndex={-1} aria-label="Nội dung chính">
         <Suspense fallback={<ViewFallback />}>
           {activeView === 'home' && <HomeView />}
           {(activeView === 'create' || activeView === 'edit') && <SetEditorView />}

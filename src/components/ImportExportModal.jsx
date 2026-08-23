@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Download, Upload, X, Copy, HardDriveDownload, AlertCircle, Loader2 } from 'lucide-react';
 import { storageService } from '../services/storage';
 import { useApp } from '../context/useApp';
+import { useModalAccessibility } from './useModalAccessibility';
 
 export const ImportExportModal = () => {
   const { 
@@ -16,13 +17,46 @@ export const ImportExportModal = () => {
   const [importError, setImportError] = useState('');
   const [jsonText, setJsonText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const closeButtonRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
+  const fileReaderRef = React.useRef(null);
+  const importRunRef = React.useRef(0);
+  const importBusyRef = React.useRef(false);
+
+  const handleClose = () => {
+    if (isImporting) return;
+    setDragOver(false);
+    setImportError('');
+    setJsonText('');
+    setIsImportExportOpen(false);
+  };
+
+  const dialogRef = useModalAccessibility({
+    isOpen: isImportExportOpen,
+    onClose: handleClose,
+    canClose: !isImporting,
+    initialFocusRef: closeButtonRef
+  });
 
   const prepareImportedSets = (content) => {
     const normalized = storageService.validateAndNormalizeJson(content);
-    const merged = new Map(sets.map(set => [String(set.id), set]));
-    normalized.forEach(set => merged.set(String(set.id), set));
-    return Array.from(merged.values());
+    // The backend upserts these sets and keeps all other account sets. Sending the
+    // whole existing collection again is slower and used to exceed batch limits.
+    return { setsToImport: normalized, importedCount: normalized.length };
   };
+
+  React.useEffect(() => {
+    if (!isImportExportOpen) return undefined;
+    return () => {
+      importRunRef.current += 1;
+      importBusyRef.current = false;
+      if (fileReaderRef.current?.readyState === FileReader.LOADING) {
+        fileReaderRef.current.abort();
+      }
+      fileReaderRef.current = null;
+      queueMicrotask(() => setIsImporting(false));
+    };
+  }, [isImportExportOpen]);
 
   const handleExportFile = () => {
     try {
@@ -30,7 +64,7 @@ export const ImportExportModal = () => {
       const blob = new Blob([jsonString], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const filename = `quizlet_vocab_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      const filename = `vocabmaster_backup_${new Date().toISOString().slice(0, 10)}.json`;
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
@@ -59,26 +93,37 @@ export const ImportExportModal = () => {
   };
 
   const handleImportJsonText = async () => {
+    if (importBusyRef.current) return;
     setImportError('');
     if (!jsonText.trim()) {
       setImportError('Vui lòng dán chuỗi mã JSON vào khung bên dưới.');
       return;
     }
 
+    importBusyRef.current = true;
     setIsImporting(true);
+    const runId = ++importRunRef.current;
     try {
-      const imported = prepareImportedSets(jsonText.trim());
-      await handleImportSuccess(imported);
+      const { setsToImport, importedCount } = prepareImportedSets(jsonText.trim());
+      await handleImportSuccess(setsToImport);
+      if (runId !== importRunRef.current) return;
+      setJsonText('');
       setIsImportExportOpen(false);
-      showToast(`Đã khôi phục thành công ${imported.length} bộ từ vựng!`, 'success');
+      showToast(`Đã khôi phục ${importedCount} bộ từ vựng từ dữ liệu sao lưu.`, 'success');
     } catch (err) {
-      setImportError(err.message || 'Mã JSON không đúng định dạng hoặc lưu thất bại.');
+      if (runId === importRunRef.current) {
+        setImportError(err.message || 'Mã JSON không đúng định dạng hoặc lưu thất bại.');
+      }
     } finally {
-      setIsImporting(false);
+      if (runId === importRunRef.current) {
+        importBusyRef.current = false;
+        setIsImporting(false);
+      }
     }
   };
 
   const processFile = (file) => {
+    if (importBusyRef.current) return;
     setImportError('');
     if (!file) return;
 
@@ -93,25 +138,44 @@ export const ImportExportModal = () => {
       return;
     }
 
+    const runId = ++importRunRef.current;
     const reader = new FileReader();
+    fileReaderRef.current = reader;
+    importBusyRef.current = true;
+    setIsImporting(true);
 
     reader.onerror = () => {
+      if (runId !== importRunRef.current) return;
+      importBusyRef.current = false;
       setIsImporting(false);
       setImportError('Không thể đọc tệp từ thiết bị. Tệp có thể bị lỗi hoặc bị khóa.');
     };
 
+    reader.onabort = () => {
+      if (runId === importRunRef.current) {
+        importBusyRef.current = false;
+        setIsImporting(false);
+      }
+    };
+
     reader.onload = async (e) => {
-      setIsImporting(true);
+      if (runId !== importRunRef.current) return;
       try {
         const content = e.target.result;
-        const imported = prepareImportedSets(content);
-        await handleImportSuccess(imported);
+        const { setsToImport, importedCount } = prepareImportedSets(content);
+        await handleImportSuccess(setsToImport);
+        if (runId !== importRunRef.current) return;
+        setJsonText('');
         setIsImportExportOpen(false);
-        showToast(`Đã khôi phục thành công ${imported.length} bộ từ vựng!`, 'success');
+        showToast(`Đã khôi phục ${importedCount} bộ từ vựng từ tệp sao lưu.`, 'success');
       } catch (err) {
-        setImportError(err.message || 'Tệp JSON không đúng định dạng hoặc lưu thất bại.');
+        if (runId === importRunRef.current) {
+          setImportError(err.message || 'Tệp JSON không đúng định dạng hoặc lưu thất bại.');
+        }
       } finally {
-        setIsImporting(false);
+        if (runId === importRunRef.current) importBusyRef.current = false;
+        if (runId === importRunRef.current) setIsImporting(false);
+        if (fileReaderRef.current === reader) fileReaderRef.current = null;
       }
     };
     reader.readAsText(file);
@@ -130,32 +194,25 @@ export const ImportExportModal = () => {
     processFile(file);
   };
 
-  React.useEffect(() => {
-    if (!isImportExportOpen) return undefined;
-
-    const previousOverflow = document.body.style.overflow;
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape' && !isImporting) setIsImportExportOpen(false);
-    };
-    document.body.style.overflow = 'hidden';
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isImportExportOpen, isImporting, setIsImportExportOpen]);
-
   if (!isImportExportOpen) return null;
 
   return (
     <div 
       className="modal-backdrop" 
-      onClick={() => !isImporting && setIsImportExportOpen(false)}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="import-modal-title"
+      onClick={(event) => {
+        if (!isImporting && event.target === event.currentTarget) handleClose();
+      }}
     >
-      <div className="modal-content animate-scale-up modal-lg" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="modal-content animate-scale-up modal-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-modal-title"
+        aria-describedby="import-modal-description"
+        aria-busy={isImporting}
+        tabIndex={-1}
+      >
         <div className="modal-header">
           <div className="modal-title-group">
             <div className="modal-icon-badge primary">
@@ -163,10 +220,10 @@ export const ImportExportModal = () => {
             </div>
             <div>
               <h3 id="import-modal-title" className="modal-title">Sao Lưu & Khôi Phục Dữ Liệu</h3>
-              <p className="modal-subtitle">Xuất hoặc nhập dữ liệu bộ từ vựng dạng tệp JSON</p>
+              <p id="import-modal-description" className="modal-subtitle">Xuất hoặc nhập dữ liệu bộ từ vựng dạng tệp JSON</p>
             </div>
           </div>
-          <button className="btn-icon" onClick={() => setIsImportExportOpen(false)} disabled={isImporting} aria-label="Đóng bảng sao lưu và khôi phục">
+          <button ref={closeButtonRef} type="button" className="btn-icon" onClick={handleClose} disabled={isImporting} aria-label="Đóng bảng sao lưu và khôi phục">
             <X size={20} />
           </button>
         </div>
@@ -179,11 +236,11 @@ export const ImportExportModal = () => {
               <h4>Xuất dữ liệu dự phòng</h4>
               <p>Tải về tệp .json hoặc sao chép mã dữ liệu để lưu trữ dự phòng.</p>
               <div className="export-btn-group">
-                <button className="btn btn-primary" onClick={handleExportFile} disabled={isImporting}>
+                <button type="button" className="btn btn-primary" onClick={handleExportFile} disabled={isImporting}>
                   <Download size={18} />
                   Tải File .JSON
                 </button>
-                <button className="btn btn-secondary" onClick={handleCopyJsonString} disabled={isImporting}>
+                <button type="button" className="btn btn-secondary" onClick={handleCopyJsonString} disabled={isImporting}>
                   <Copy size={18} />
                   Sao chép mã JSON
                 </button>
@@ -212,22 +269,33 @@ export const ImportExportModal = () => {
                     ? 'Đang đồng bộ dữ liệu vào tài khoản...'
                     : 'Kéo thả tệp .json vào đây hoặc '}
                   {!isImporting && (
-                    <label htmlFor="file-upload" className="file-link">chọn tệp</label>
+                    <button
+                      type="button"
+                      className="file-link file-link-button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isImporting}
+                    >
+                      chọn tệp
+                    </button>
                   )}
                 </p>
                 <input 
+                  ref={fileInputRef}
                   id="file-upload" 
                   type="file" 
                   accept=".json" 
                   onChange={handleFileChange} 
                   className="hidden-file-input"
                   disabled={isImporting}
+                  tabIndex={-1}
                 />
               </div>
 
               {/* Item 30 Fix: Use multiline textarea for JSON paste instead of single-line input */}
               <div className="paste-json-wrapper vertical">
+                <label className="sr-only" htmlFor="json-paste-input">Dán nội dung sao lưu JSON</label>
                 <textarea
+                  id="json-paste-input"
                   className="form-textarea code-font json-paste-area"
                   rows={4}
                   placeholder="Hoặc dán chuỗi mã JSON nhiều dòng vào đây..."
@@ -236,6 +304,7 @@ export const ImportExportModal = () => {
                   disabled={isImporting}
                 />
                 <button 
+                  type="button"
                   className="btn btn-secondary btn-sm w-full mt-2" 
                   onClick={handleImportJsonText} 
                   disabled={!jsonText.trim() || isImporting}
@@ -245,7 +314,7 @@ export const ImportExportModal = () => {
               </div>
 
               {importError && (
-                <div className="error-alert mt-2">
+                <div className="error-alert mt-2" role="alert">
                   <AlertCircle size={16} />
                   <span>{importError}</span>
                 </div>
@@ -256,9 +325,9 @@ export const ImportExportModal = () => {
 
         <div className="modal-footer justify-between">
           <span className="privacy-note">
-            🔒 Bảo mật 100% - Dữ liệu của bạn luôn được bảo vệ an toàn.
+            🔒 Tệp sao lưu có thể chứa toàn bộ bộ từ vựng; hãy cất tệp ở nơi an toàn.
           </span>
-          <button className="btn btn-secondary" onClick={() => setIsImportExportOpen(false)} disabled={isImporting}>
+          <button type="button" className="btn btn-secondary" onClick={handleClose} disabled={isImporting}>
             Đóng
           </button>
         </div>

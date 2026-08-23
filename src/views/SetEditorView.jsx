@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ArrowLeft, 
   Plus, 
@@ -12,9 +12,17 @@ import {
   Loader2
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
+import { storageService } from '../services/storage';
+import { parseBatchVocabulary } from '../services/schema';
+
+const createClientId = prefix => {
+  const randomPart = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${randomPart}`;
+};
 
 export const SetEditorView = () => {
-  const { activeView, editingSetId, sets, saveSet, navigateTo, showToast } = useApp();
+  const { activeView, editingSetId, sets, saveSet, navigateTo, showToast, user, setNavigationGuard } = useApp();
   const isEditing = activeView === 'edit' && editingSetId;
 
   const [title, setTitle] = useState('');
@@ -28,27 +36,31 @@ export const SetEditorView = () => {
   const [batchText, setBatchText] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
+  const newSetIdRef = useRef(createClientId('set'));
+  const baseUpdatedAtRef = useRef(null);
+  const savingRef = useRef(false);
 
   // Item 90 Fix: Prevent background sets update from overwriting active user draft
   const initializedSetIdRef = React.useRef(null);
 
+  /* oxlint-disable react/set-state-in-effect -- restore/reset editor state when route target changes */
   useEffect(() => {
-    const currentKey = isEditing ? String(editingSetId) : 'new';
+    const editorKey = isEditing ? String(editingSetId) : 'new';
+    const currentKey = `${user?.id || 'guest'}::${editorKey}`;
     if (initializedSetIdRef.current === currentKey) {
       return;
     }
 
-    let savedDraft = null;
-    try {
-      const rawDraft = localStorage.getItem('vocabmaster_editor_draft');
-      const parsedDraft = rawDraft ? JSON.parse(rawDraft) : null;
-      const isRecent = parsedDraft?.savedAt && Date.now() - parsedDraft.savedAt < 7 * 24 * 60 * 60 * 1000;
-      if (parsedDraft?.editorKey === currentKey && isRecent && Array.isArray(parsedDraft.cards)) {
-        savedDraft = parsedDraft;
-      }
-    } catch {}
+    const savedDraft = storageService.getEditorDraft(user?.id, editorKey);
 
     if (savedDraft) {
+      if (!isEditing && typeof savedDraft.setId === 'string' && savedDraft.setId) {
+        newSetIdRef.current = savedDraft.setId;
+      }
+      const draftRevision = Number(savedDraft.expectedUpdatedAt);
+      baseUpdatedAtRef.current = isEditing && Number.isSafeInteger(draftRevision)
+        ? draftRevision
+        : null;
       setTitle(savedDraft.title || '');
       setDescription(savedDraft.description || '');
       setCards(savedDraft.cards);
@@ -62,6 +74,10 @@ export const SetEditorView = () => {
     if (isEditing) {
       const existingSet = sets.find(s => String(s.id) === String(editingSetId));
       if (existingSet) {
+        const existingRevision = Number(existingSet.updatedAt);
+        baseUpdatedAtRef.current = Number.isSafeInteger(existingRevision)
+          ? existingRevision
+          : null;
         setTitle(existingSet.title || '');
         setDescription(existingSet.description || '');
         setCards(existingSet.cards && existingSet.cards.length > 0 ? existingSet.cards : [
@@ -74,6 +90,7 @@ export const SetEditorView = () => {
         navigateTo('home');
       }
     } else {
+      baseUpdatedAtRef.current = null;
       setTitle('');
       setDescription('');
       setCards([
@@ -83,7 +100,8 @@ export const SetEditorView = () => {
       setIsDirty(false);
       initializedSetIdRef.current = currentKey;
     }
-  }, [isEditing, editingSetId, sets, navigateTo, showToast]);
+  }, [isEditing, editingSetId, sets, navigateTo, showToast, user?.id]);
+  /* oxlint-enable react/set-state-in-effect */
 
   // Item 14 Fix: Warn user when navigating away with unsaved changes
   useEffect(() => {
@@ -97,14 +115,18 @@ export const SetEditorView = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isDirty]);
 
-  const handleBack = () => {
-    if (isDirty) {
-      if (window.confirm('Bạn có thay đổi chưa lưu. Bạn có chắc chắn muốn rời đi?')) {
-        navigateTo('home');
-      }
-    } else {
-      navigateTo('home');
+  // Browser Back/Forward must not silently discard a draft.
+  useEffect(() => {
+    if (!isDirty) {
+      setNavigationGuard(null);
+      return () => setNavigationGuard(null);
     }
+    setNavigationGuard(() => window.confirm('Bạn có thay đổi chưa lưu. Bạn có chắc chắn muốn rời đi?'));
+    return () => setNavigationGuard(null);
+  }, [isDirty, setNavigationGuard]);
+
+  const handleBack = () => {
+    navigateTo('home');
   };
 
   // Card Operations
@@ -116,7 +138,7 @@ export const SetEditorView = () => {
   const addCardRow = () => {
     setIsDirty(true);
     const newCard = {
-      id: `card-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: createClientId('card'),
       english: '',
       vietnamese: '',
       example: '',
@@ -146,83 +168,25 @@ export const SetEditorView = () => {
     setCards(newCards);
   };
 
-  // Item 17 Fix: Robust Batch Import Parser (correct handling for well-known, state-of-the-art)
-  const parseBatchText = (text) => {
-    if (!text || !text.trim()) return [];
-
-    const lines = text.split('\n');
-    const results = [];
-    const seenWords = new Set();
-
-    lines.forEach((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-
-      // Item 126 Fix: Robust Quote-Aware Parser handling quoted CSV/TSV cells with URLs, colons, pipes, and hyphens
-      let parts = [];
-      if (trimmed.includes('\t')) {
-        parts = trimmed.split('\t');
-      } else if (trimmed.includes('|')) {
-        parts = trimmed.split('|');
-      } else if (trimmed.includes(';')) {
-        parts = trimmed.split(';');
-      } else if (trimmed.includes(' - ')) {
-        parts = trimmed.split(' - ');
-      } else if (trimmed.includes(',')) {
-        // Regex quote-aware CSV split preserving quotes and internal commas/colons
-        parts = trimmed.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [trimmed];
-      } else if (trimmed.includes(':') && !trimmed.startsWith('http')) {
-        parts = trimmed.split(':');
-      } else if (trimmed.includes('=')) {
-        parts = trimmed.split('=');
-      } else {
-        parts = [trimmed];
-      }
-
-      parts = parts.map(p => p.trim().replace(/^["']|["']$/g, '').replace(/""/g, '"'));
-
-      if (parts.length >= 2) {
-        const english = parts[0];
-        const vietnamese = parts[1];
-        const example = parts[2] || '';
-        const exampleTranslation = parts[3] || '';
-
-        const wordKey = `${english.toLowerCase()}::${vietnamese.toLowerCase()}`;
-
-        if (english && vietnamese && !seenWords.has(wordKey)) {
-          seenWords.add(wordKey);
-          results.push({
-            id: `card-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            english,
-            vietnamese,
-            example,
-            exampleTranslation,
-            stats: { correct: 0, wrong: 0 }
-          });
-        }
-      }
-    });
-
-    return results;
-  };
-
-  // Item 128 Fix: Auto-save draft to localStorage whenever user edits cards
+  // Auto-save drafts separately for every account and editor target.
   useEffect(() => {
     if (isDirty && (title || description || cards.some(c => c.english || c.vietnamese))) {
-      try {
-        localStorage.setItem('vocabmaster_editor_draft', JSON.stringify({
-          editorKey: isEditing ? String(editingSetId) : 'new',
-          title,
-          description,
-          cards,
-          batchText,
-          savedAt: Date.now()
-        }));
-      } catch {}
+      storageService.saveEditorDraft(user?.id, isEditing ? String(editingSetId) : 'new', {
+        setId: isEditing ? String(editingSetId) : newSetIdRef.current,
+        title,
+        description,
+        cards,
+        batchText,
+        expectedUpdatedAt: baseUpdatedAtRef.current
+      });
     }
-  }, [title, description, cards, batchText, isDirty, isEditing, editingSetId]);
+  }, [title, description, cards, batchText, isDirty, isEditing, editingSetId, user?.id]);
 
-  const parsedBatchPreview = parseBatchText(batchText);
+  const parsedBatchPreview = parseBatchVocabulary(batchText).map(row => ({
+    ...row,
+    id: createClientId('card'),
+    stats: { correct: 0, wrong: 0 }
+  }));
 
   const handleBatchParseConfirm = () => {
     if (parsedBatchPreview.length === 0) {
@@ -278,7 +242,7 @@ export const SetEditorView = () => {
   // Item 11, 12, 13 Fix: Unified submit handler, duplicate prevention, and preserved createdAt
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
-    if (isSaving) return;
+    if (savingRef.current) return;
 
     if (!title.trim()) {
       showToast('Vui lòng nhập tên bộ từ vựng!', 'warning');
@@ -309,23 +273,28 @@ export const SetEditorView = () => {
       return;
     }
 
+    savingRef.current = true;
     setIsSaving(true);
     try {
       const existingSet = sets.find(s => String(s.id) === String(editingSetId));
       const setData = {
-        id: isEditing ? editingSetId : `set-${Date.now()}`,
+        // Keep this ID stable across retries so a lost response cannot create duplicates.
+        id: isEditing ? editingSetId : newSetIdRef.current,
         title: title.trim(),
         description: description.trim(),
         cards: validCards,
-        createdAt: isEditing && existingSet && existingSet.createdAt ? existingSet.createdAt : Date.now()
+        createdAt: isEditing && existingSet && existingSet.createdAt ? existingSet.createdAt : Date.now(),
+        ...(isEditing ? { expectedUpdatedAt: baseUpdatedAtRef.current } : {})
       };
 
-      await saveSet(setData);
+      const wasSaved = await saveSet(setData);
+      if (!wasSaved) return;
       setIsDirty(false);
-      localStorage.removeItem('vocabmaster_editor_draft');
-    } catch (err) {
-      showToast(err.message || 'Lỗi khi lưu bộ từ vựng.', 'error');
+      storageService.removeEditorDraft(user?.id, isEditing ? String(editingSetId) : 'new');
+    } catch {
+      // AppContext owns the single user-facing save error toast.
     } finally {
+      savingRef.current = false;
       setIsSaving(false);
     }
   };
@@ -343,6 +312,8 @@ export const SetEditorView = () => {
             type="button" 
             className="btn btn-secondary btn-icon-text"
             onClick={() => setShowBatchImport(!showBatchImport)}
+            aria-expanded={showBatchImport}
+            aria-controls="batch-import-panel"
           >
             <FileText size={18} />
             <span>Nhập nhanh thông minh (Batch Add)</span>
@@ -352,6 +323,7 @@ export const SetEditorView = () => {
             className="btn btn-primary" 
             onClick={handleSubmit}
             disabled={isSaving}
+            aria-busy={isSaving}
           >
             {isSaving ? <Loader2 size={18} className="spinner" /> : <Save size={18} />}
             <span>{isSaving ? 'Đang lưu...' : (isEditing ? 'Lưu thay đổi' : 'Tạo bộ từ vựng')}</span>
@@ -362,11 +334,12 @@ export const SetEditorView = () => {
       <form onSubmit={handleSubmit}>
         {/* Title & Description Card */}
         <div className="editor-meta-card">
-          <h2>{isEditing ? 'Chỉnh Sửa Bộ Từ Vựng' : 'Tạo Bộ Từ Vựng Mới'}</h2>
+          <h2 id="set-editor-title">{isEditing ? 'Chỉnh Sửa Bộ Từ Vựng' : 'Tạo Bộ Từ Vựng Mới'}</h2>
           
           <div className="form-group">
-            <label className="form-label required">Tên bộ từ vựng</label>
+            <label htmlFor="set-title-input" className="form-label required">Tên bộ từ vựng</label>
             <input
+              id="set-title-input"
               type="text"
               className="form-input title-input"
               placeholder='Ví dụ: "IELTS Academic Vocabulary", "Từ vựng Giao tiếp hàng ngày"'
@@ -377,8 +350,9 @@ export const SetEditorView = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Mô tả (tùy chọn)</label>
+            <label htmlFor="set-description-input" className="form-label">Mô tả (tùy chọn)</label>
             <textarea
+              id="set-description-input"
               className="form-textarea"
               placeholder="Thêm mô tả về nội dung hoặc mục tiêu của bộ từ vựng này..."
               rows={2}
@@ -391,17 +365,18 @@ export const SetEditorView = () => {
 
         {/* Batch Import Drawer */}
         {showBatchImport && (
-          <div className="batch-import-panel card animate-slide-down">
+          <div id="batch-import-panel" className="batch-import-panel card animate-slide-down" role="region" aria-labelledby="batch-import-title">
             <div className="panel-header">
               <div className="panel-title-group">
                 <Sparkles className="text-primary" size={20} />
-                <h3>Nhập nhanh nhiều từ vựng cùng lúc</h3>
+                <h3 id="batch-import-title">Nhập nhanh nhiều từ vựng cùng lúc</h3>
               </div>
               <button 
                 type="button" 
                 className="icon-btn" 
                 onClick={() => setShowBatchImport(false)}
                 title="Đóng bảng"
+                aria-label="Đóng bảng nhập nhanh"
               >
                 <X size={18} />
               </button>
@@ -432,7 +407,9 @@ export const SetEditorView = () => {
               </button>
             </div>
 
+            <label htmlFor="batch-import-text" className="form-label">Danh sách từ cần thêm</label>
             <textarea
+              id="batch-import-text"
               className="form-textarea code-font batch-textarea"
               rows={6}
               placeholder={`well-known | nổi tiếng | He is a well-known scientist. | Anh ấy là một nhà khoa học nổi tiếng.\nstate-of-the-art | hiện đại | They use state-of-the-art tech. | Họ dùng công nghệ hiện đại.`}
@@ -444,7 +421,7 @@ export const SetEditorView = () => {
             {/* Live Real-Time Preview */}
             {parsedBatchPreview.length > 0 && (
               <div className="batch-preview-container">
-                <div className="preview-header">
+                <div className="preview-header" role="status" aria-live="polite">
                   <span>🔍 Xem trước ({parsedBatchPreview.length} thẻ nhận diện thành công):</span>
                 </div>
                 <div className="preview-cards-grid">
@@ -491,7 +468,7 @@ export const SetEditorView = () => {
 
         {/* Cards List Header */}
         <div className="cards-header-bar">
-          <h3>Danh sách từ vựng ({cards.length} thẻ)</h3>
+          <h3 aria-live="polite" aria-atomic="true">Danh sách từ vựng ({cards.length} thẻ)</h3>
           <span className="cards-tip">Điền từ tiếng Anh, nghĩa tiếng Việt và câu ví dụ kèm bản dịch</span>
         </div>
 
@@ -508,6 +485,7 @@ export const SetEditorView = () => {
                     onClick={() => moveCard(index, -1)}
                     disabled={index === 0}
                     title="Di chuyển lên"
+                    aria-label={`Di chuyển thẻ ${index + 1} lên trên`}
                   >
                     <ChevronUp size={18} />
                   </button>
@@ -517,6 +495,7 @@ export const SetEditorView = () => {
                     onClick={() => moveCard(index, 1)}
                     disabled={index === cards.length - 1}
                     title="Di chuyển xuống"
+                    aria-label={`Di chuyển thẻ ${index + 1} xuống dưới`}
                   >
                     <ChevronDown size={18} />
                   </button>
@@ -525,6 +504,7 @@ export const SetEditorView = () => {
                     className="icon-btn-subtle danger" 
                     onClick={() => removeCardRow(card.id)}
                     title="Xóa thẻ này"
+                    aria-label={`Xóa thẻ ${index + 1}`}
                   >
                     <Trash2 size={18} />
                   </button>
@@ -533,8 +513,9 @@ export const SetEditorView = () => {
 
               <div className="card-item-fields">
                 <div className="field-group">
-                  <label className="field-label required">Từ tiếng Anh (English)</label>
+                  <label htmlFor={`card-${index}-english`} className="field-label required">Từ tiếng Anh (English)</label>
                   <input
+                    id={`card-${index}-english`}
                     type="text"
                     className="form-input"
                     placeholder="Ví dụ: Accomplish"
@@ -545,8 +526,9 @@ export const SetEditorView = () => {
                 </div>
 
                 <div className="field-group">
-                  <label className="field-label required">Nghĩa tiếng Việt (Vietnamese)</label>
+                  <label htmlFor={`card-${index}-vietnamese`} className="field-label required">Nghĩa tiếng Việt (Vietnamese)</label>
                   <input
+                    id={`card-${index}-vietnamese`}
                     type="text"
                     className="form-input"
                     placeholder="Ví dụ: Hoàn thành, đạt được"
@@ -557,8 +539,9 @@ export const SetEditorView = () => {
                 </div>
 
                 <div className="field-group">
-                  <label className="field-label">Câu ví dụ (Tiếng Anh)</label>
+                  <label htmlFor={`card-${index}-example`} className="field-label">Câu ví dụ (Tiếng Anh)</label>
                   <input
+                    id={`card-${index}-example`}
                     type="text"
                     className="form-input"
                     placeholder="e.g. She worked hard to accomplish her goals this year."
@@ -569,8 +552,9 @@ export const SetEditorView = () => {
                 </div>
 
                 <div className="field-group">
-                  <label className="field-label">Dịch câu ví dụ (Tiếng Việt)</label>
+                  <label htmlFor={`card-${index}-example-translation`} className="field-label">Dịch câu ví dụ (Tiếng Việt)</label>
                   <input
+                    id={`card-${index}-example-translation`}
                     type="text"
                     className="form-input"
                     placeholder="Ví dụ: Cô ấy đã làm việc chăm chỉ để đạt được mục tiêu."
@@ -599,6 +583,7 @@ export const SetEditorView = () => {
             type="submit" 
             className="btn btn-primary btn-lg"
             disabled={isSaving}
+            aria-busy={isSaving}
           >
             {isSaving ? <Loader2 size={20} className="spinner" /> : <Save size={20} />}
             <span>{isSaving ? 'Đang lưu...' : (isEditing ? 'Lưu thay đổi' : 'Tạo bộ từ vựng')}</span>

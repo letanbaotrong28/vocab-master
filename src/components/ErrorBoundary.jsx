@@ -15,6 +15,12 @@ export class ErrorBoundary extends React.Component {
     console.error('ErrorBoundary caught rendering error:', error, errorInfo);
   }
 
+  componentDidUpdate(_previousProps, previousState) {
+    if (!previousState.hasError && this.state.hasError) {
+      this.errorHeading?.focus({ preventScroll: true });
+    }
+  }
+
   componentDidMount() {
     this.handleUnhandledRejection = (e) => {
       console.error('Unhandled Promise Rejection caught in ErrorBoundary:', e.reason);
@@ -34,6 +40,11 @@ export class ErrorBoundary extends React.Component {
 
   // Item 130 Fix: Selectively clear ONLY app-specific keys instead of destructive localStorage.clear()
   handleResetApp = () => {
+    const confirmed = window.confirm(
+      'Thao tác này sẽ xóa bộ từ vựng, tiến trình và tùy chọn đang lưu trên thiết bị này. Dữ liệu chưa đồng bộ sẽ không thể khôi phục. Bạn có chắc chắn muốn tiếp tục?'
+    );
+    if (!confirmed) return;
+
     try {
       const keysToRemove = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -50,17 +61,25 @@ export class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="container p-8 text-center animate-fade-in" style={{ padding: '6rem 1rem' }}>
-          <div className="error-boundary-card card card-shadow max-w-lg mx-auto p-8" style={{ margin: '0 auto', maxWidth: '500px' }}>
+        <main className="container p-8 text-center animate-fade-in error-boundary-shell">
+          <div className="error-boundary-card card card-shadow max-w-lg mx-auto p-8" role="alert" aria-labelledby="error-boundary-title" aria-describedby="error-boundary-description">
             <div className="text-danger mb-4 flex justify-center">
               <AlertOctagon size={48} />
             </div>
-            <h2 className="mb-2">Đã xảy ra lỗi không mong muốn!</h2>
-            <p className="text-muted mb-6" style={{ fontSize: '0.92rem' }}>
-              Ứng dụng gặp sự cố khi xử lý dữ liệu. Bạn có thể khôi phục lại ứng dụng hoặc dọn dẹp bộ nhớ tạm.
+            <h2
+              id="error-boundary-title"
+              ref={(element) => { this.errorHeading = element; }}
+              className="mb-2"
+              tabIndex={-1}
+            >
+              Đã xảy ra lỗi không mong muốn!
+            </h2>
+            <p id="error-boundary-description" className="text-muted mb-6">
+              Hãy thử tải lại trang trước. Chỉ xóa dữ liệu cục bộ nếu lỗi vẫn tiếp diễn và bạn đã sao lưu hoặc đồng bộ dữ liệu cần giữ.
             </p>
             <div className="flex gap-3 justify-center flex-wrap">
               <button 
+                type="button"
                 className="btn btn-secondary" 
                 onClick={() => window.location.reload()}
               >
@@ -68,15 +87,16 @@ export class ErrorBoundary extends React.Component {
                 Tải lại trang
               </button>
               <button 
+                type="button"
                 className="btn btn-primary" 
                 onClick={this.handleResetApp}
               >
                 <RotateCcw size={18} />
-                Khôi phục dữ liệu ban đầu
+                Xóa dữ liệu cục bộ
               </button>
             </div>
           </div>
-        </div>
+        </main>
       );
     }
 

@@ -22,6 +22,8 @@ export const FlashcardView = () => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [isShuffled, setIsShuffled] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const recordingRef = React.useRef(false);
 
   // Item 115 Fix: Cancel TTS on component unmount
   useEffect(() => {
@@ -71,14 +73,20 @@ export const FlashcardView = () => {
 
   // Item 112 Fix: Mark card as known or still learning
   const handleMarkCard = async (isCorrect) => {
+    if (recordingRef.current) return;
     const card = cards[currentIndex];
     if (!card || !currentSet) return;
+    recordingRef.current = true;
+    setIsRecording(true);
     try {
       await recordWordResult(currentSet.id, card.id, isCorrect);
       showToast(isCorrect ? 'Đã ghi nhận: Đã biết!' : 'Đã ghi nhận: Cần học lại', isCorrect ? 'success' : 'info');
       handleNext();
     } catch (e) {
       showToast(e.message || 'Không thể ghi nhận kết quả thẻ.', 'warning');
+    } finally {
+      recordingRef.current = false;
+      setIsRecording(false);
     }
   };
 
@@ -131,7 +139,7 @@ export const FlashcardView = () => {
     return (
       <div className="container animate-fade-in text-center p-8">
         <h2>Không tìm thấy bộ từ vựng hoặc bộ từ vựng rỗng!</h2>
-        <button className="btn btn-primary mt-4" onClick={() => navigateTo('home')}>
+        <button type="button" className="btn btn-primary mt-4" onClick={() => navigateTo('home')}>
           Quay lại trang chủ
         </button>
       </div>
@@ -144,7 +152,7 @@ export const FlashcardView = () => {
     <div className="study-view flashcard-view container animate-fade-in">
       {/* Top Header & Mode Navigation */}
       <div className="study-header">
-        <button className="btn btn-ghost" onClick={() => navigateTo('home')}>
+        <button type="button" className="btn btn-ghost" onClick={() => navigateTo('home')}>
           <ArrowLeft size={20} />
           Quay lại
         </button>
@@ -158,11 +166,12 @@ export const FlashcardView = () => {
 
         {/* Quick Mode Switcher */}
         <nav className="study-mode-nav" aria-label="Chuyển chế độ học">
-          <button className="nav-mode-btn active" title="Flashcards" aria-label="Flashcards" aria-current="page">
+          <button type="button" className="nav-mode-btn active" title="Flashcards" aria-label="Flashcards" aria-current="page">
             <BookOpen size={18} />
             <span className="nav-mode-label">Thẻ học</span>
           </button>
           <button 
+            type="button"
             className="nav-mode-btn" 
             onClick={() => navigateTo('learn', currentSet.id)}
             title="Trắc nghiệm 4 đáp án"
@@ -172,6 +181,7 @@ export const FlashcardView = () => {
             <span className="nav-mode-label">Học bài</span>
           </button>
           <button 
+            type="button"
             className="nav-mode-btn" 
             onClick={() => navigateTo('typing', currentSet.id)}
             title="Gõ từ tiếng Anh"
@@ -181,6 +191,7 @@ export const FlashcardView = () => {
             <span className="nav-mode-label">Gõ từ</span>
           </button>
           <button 
+            type="button"
             className="nav-mode-btn" 
             onClick={() => navigateTo('progress', currentSet.id)}
             title="Thống kê"
@@ -202,9 +213,11 @@ export const FlashcardView = () => {
 
         <div className="toolbar-controls">
           <button 
+            type="button"
             className={`btn-icon-label ${isShuffled ? 'active' : ''}`}
             onClick={handleShuffle}
             title="Xáo trộn thẻ"
+            aria-pressed={isShuffled}
           >
             <Shuffle size={18} />
             <span>Xáo trộn</span>
@@ -214,18 +227,20 @@ export const FlashcardView = () => {
 
       {/* Central 3D Flashcard Container */}
       <div className="flashcard-container">
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          Thẻ {currentIndex + 1} trên {cards.length}. {isFlipped ? `Mặt tiếng Việt: ${currentCard.vietnamese}` : `Mặt tiếng Anh: ${currentCard.english}`}.
+        </p>
         <div 
           className={`flashcard-3d ${isFlipped ? 'flipped' : ''}`}
-          onClick={handleFlip}
-          tabIndex={0}
-          role="button"
-          aria-label="Click or press space to flip card"
+          role="group"
+          aria-label={`Thẻ ${currentIndex + 1} trên ${cards.length}`}
         >
           {/* Front Face: English Word & English Example */}
-          <div className="card-face card-front">
+          <article className="card-face card-front" aria-hidden={isFlipped} inert={isFlipped}>
             <div className="face-header">
               <span className="face-lang-badge">ENGLISH</span>
               <button 
+                type="button"
                 className="speech-btn" 
                 onClick={(e) => speakEnglish(e, currentCard.english)}
                 title="Nghe phát âm"
@@ -236,7 +251,7 @@ export const FlashcardView = () => {
             </div>
 
             <div className="face-content">
-              <h1 className="card-word">{currentCard.english}</h1>
+              <h3 className="card-word" lang="en">{currentCard.english}</h3>
               {currentCard.example && (
                 <div className="card-example">
                   <p className="example-text">"{currentCard.example}"</p>
@@ -246,16 +261,17 @@ export const FlashcardView = () => {
 
             <div className="face-footer">
               <span className="flip-hint">
-                <RotateCw size={15} /> Nhấn để lật xem nghĩa tiếng Việt (Phím Space)
+                <RotateCw size={15} aria-hidden="true" /> Dùng nút Lật thẻ hoặc phím Space để xem nghĩa
               </span>
             </div>
-          </div>
+          </article>
 
           {/* Back Face: Vietnamese Meaning & Translated Example Sentence */}
-          <div className="card-face card-back">
+          <article className="card-face card-back" aria-hidden={!isFlipped} inert={!isFlipped}>
             <div className="face-header">
               <span className="face-lang-badge vietnamese">TIẾNG VIỆT</span>
               <button 
+                type="button"
                 className="speech-btn" 
                 onClick={(e) => speakEnglish(e, currentCard.english)}
                 title="Nghe lại phát âm tiếng Anh"
@@ -266,7 +282,7 @@ export const FlashcardView = () => {
             </div>
 
             <div className="face-content">
-              <h1 className="card-word vietnamese-meaning">{currentCard.vietnamese}</h1>
+              <h3 className="card-word vietnamese-meaning" lang="vi">{currentCard.vietnamese}</h3>
               <p className="card-sub-word">"{currentCard.english}"</p>
               
               {/* Display translated sentence (or fallback to example if no translation) */}
@@ -281,48 +297,56 @@ export const FlashcardView = () => {
 
             <div className="face-footer">
               <span className="flip-hint">
-                <RotateCw size={15} /> Nhấn để quay lại mặt tiếng Anh
+                <RotateCw size={15} aria-hidden="true" /> Dùng nút Lật thẻ hoặc phím Space để quay lại
               </span>
             </div>
-          </div>
+          </article>
         </div>
       </div>
 
       {/* Flashcard Navigation Controls & Progress Marking (Item 112 UI Fix) */}
       <div className="flashcard-navigation">
         <button 
+          type="button"
           className="nav-arrow-btn" 
           onClick={handlePrev}
           title="Thẻ trước (Mũi tên Trái)"
+          aria-label="Chuyển đến thẻ trước"
         >
           <ChevronLeft size={28} />
         </button>
 
         <button 
+          type="button"
           className="btn btn-secondary mark-btn mark-learning"
           onClick={() => handleMarkCard(false)}
+          disabled={isRecording}
           title="Đánh dấu cần học lại"
         >
           ❌ Cần học lại
         </button>
 
-        <button className="flip-action-btn" onClick={handleFlip}>
+        <button type="button" className="flip-action-btn" onClick={handleFlip} aria-pressed={isFlipped}>
           <RotateCw size={18} />
           Lật thẻ
         </button>
 
         <button 
+          type="button"
           className="btn btn-primary mark-btn mark-known"
           onClick={() => handleMarkCard(true)}
+          disabled={isRecording}
           title="Đánh dấu đã biết từ này"
         >
           ✅ Đã biết
         </button>
 
         <button 
+          type="button"
           className="nav-arrow-btn" 
           onClick={handleNext}
           title="Thẻ tiếp theo (Mũi tên Phải)"
+          aria-label="Chuyển đến thẻ tiếp theo"
         >
           <ChevronRight size={28} />
         </button>
@@ -331,7 +355,7 @@ export const FlashcardView = () => {
       {/* Shortcuts Helper */}
       <div className="keyboard-shortcuts-hint">
         <span className="hide-mobile">💡 Mẹo bàn phím: <code>Phím Trái</code> = Trước, <code>Phím Phải</code> = Tiếp, <code>Space</code> = Lật thẻ</span>
-        <span className="show-mobile-only">💡 Chạm thẻ để lật mặt • Dùng 2 nút mũi tên bên dưới để chuyển thẻ</span>
+        <span className="show-mobile-only">💡 Dùng nút Lật thẻ để đổi mặt • Dùng 2 nút mũi tên để chuyển thẻ</span>
       </div>
     </div>
   );

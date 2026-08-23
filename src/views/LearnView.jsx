@@ -27,6 +27,8 @@ const shuffleArray = (array) => {
   return arr;
 };
 
+const normalizeChoice = value => String(value || '').trim().toLocaleLowerCase();
+
 export const LearnView = () => {
   const { currentSet, sets, studyCardIds, recordWordResult, navigateTo, showToast } = useApp();
 
@@ -37,8 +39,12 @@ export const LearnView = () => {
   const [isAnswered, setIsAnswered] = useState(false);
   const [results, setResults] = useState({ correct: 0, wrong: 0, history: [] });
   const [isFinished, setIsFinished] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = React.useRef(false);
 
-  const questionSourceJson = JSON.stringify({
+  // The view is keyed by set id in App.jsx, so vocabulary can be snapshotted once
+  // per study session. Progress updates then no longer serialize every card again.
+  const [questionSourceJson] = useState(() => JSON.stringify({
     currentSetId: currentSet?.id ?? null,
     studyCardIds: Array.isArray(studyCardIds) ? studyCardIds.map(String) : null,
     sets: sets.map(set => ({
@@ -51,7 +57,7 @@ export const LearnView = () => {
         exampleTranslation: card.exampleTranslation
       }))
     }))
-  });
+  }));
 
   // Helper to generate distinct options based on chosen direction (Items 52, 53, 54, 55 Fix)
   const generateQuestions = useCallback(() => {
@@ -115,6 +121,41 @@ export const LearnView = () => {
         isEnToVn = true;
       }
 
+      const pairForMode = candidate => {
+        if (modeType === 'ex_en_to_vn') {
+          if (!candidate.example?.trim()) return null;
+          return {
+            prompt: candidate.example.trim(),
+            answer: (candidate.exampleTranslation || candidate.vietnamese).trim()
+          };
+        }
+        if (modeType === 'ex_vn_to_en') {
+          if (!candidate.example?.trim()) return null;
+          return {
+            prompt: (candidate.exampleTranslation || candidate.vietnamese).trim(),
+            answer: candidate.example.trim()
+          };
+        }
+        if (modeType === 'vn_to_en') {
+          return { prompt: candidate.vietnamese.trim(), answer: candidate.english.trim() };
+        }
+        return { prompt: candidate.english.trim(), answer: candidate.vietnamese.trim() };
+      };
+
+      // Two cards can intentionally map the same prompt to different valid answers
+      // (synonyms or alternate meanings). Treat every equivalent mapping as correct.
+      const acceptedAnswers = Array.from(new Set(
+        currentSet.cards
+          .map(pairForMode)
+          .filter(pair => pair && normalizeChoice(pair.prompt) === normalizeChoice(promptText))
+          .map(pair => pair.answer)
+          .filter(Boolean)
+      ));
+      if (!acceptedAnswers.some(answer => normalizeChoice(answer) === normalizeChoice(correctAnswer))) {
+        acceptedAnswers.unshift(correctAnswer);
+      }
+      const acceptedNormalized = new Set(acceptedAnswers.map(normalizeChoice));
+
       // Get distractors from pool (Items 52 & 53 Fix)
       const setDistractors = currentSet.cards
         .filter(c => c.id !== card.id)
@@ -132,7 +173,7 @@ export const LearnView = () => {
 
       // Item 117 & 119 Fix: Ensure strictly unique distractors and GUARANTEE 4 options even for 1-2 card sets!
       const uniqueDistractorsPool = Array.from(new Set([...setDistractors, ...globalPool]))
-        .filter(m => m && m.toLowerCase() !== correctAnswer.toLowerCase());
+        .filter(m => m && !acceptedNormalized.has(normalizeChoice(m)));
 
       const shuffledDistractors = shuffleArray(uniqueDistractorsPool);
       let distractors = shuffledDistractors.slice(0, 3);
@@ -144,7 +185,7 @@ export const LearnView = () => {
       let fallbackIdx = 0;
       while (distractors.length < 3) {
         const fallback = genericFallbacks[fallbackIdx] || `Phương án phụ #${fallbackIdx + 1}`;
-        if (!distractors.includes(fallback) && fallback.toLowerCase() !== correctAnswer.toLowerCase()) {
+        if (!distractors.includes(fallback) && !acceptedNormalized.has(normalizeChoice(fallback))) {
           distractors.push(fallback);
         }
         fallbackIdx++;
@@ -157,6 +198,7 @@ export const LearnView = () => {
         promptText,
         promptLabel,
         correctAnswer,
+        acceptedAnswers,
         options,
         isEnToVn,
         isExampleMode
@@ -192,11 +234,26 @@ export const LearnView = () => {
 
   // Item 116 Fix: Await recordWordResult to prevent out-of-order stats recording
   const handleSelectOption = useCallback(async (option) => {
-    if (isAnswered) return;
+    if (isAnswered || submittingRef.current || !currentQ) return;
+
+    const isCorrect = typeof option === 'string'
+      && currentQ.acceptedAnswers.some(answer => normalizeChoice(answer) === normalizeChoice(option));
+
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      if (recordWordResult && currentSet) {
+        await recordWordResult(currentSet.id, currentQ.card.id, isCorrect);
+      }
+    } catch (error) {
+      showToast(error.message || 'Không thể lưu kết quả. Vui lòng thử lại.', 'warning');
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      return;
+    }
+
     setSelectedOption(option);
     setIsAnswered(true);
-
-    const isCorrect = option && option.toLowerCase().trim() === currentQ.correctAnswer.toLowerCase().trim();
 
     // Update session results
     setResults(prev => ({
@@ -214,18 +271,13 @@ export const LearnView = () => {
       ]
     }));
 
-    try {
-      if (recordWordResult && currentSet) {
-        await recordWordResult(currentSet.id, currentQ.card.id, isCorrect);
-      }
-    } catch (e) {
-      console.error('Error recording word result:', e);
-    }
-  }, [currentQ, currentSet, isAnswered, recordWordResult]);
+    submittingRef.current = false;
+    setIsSubmitting(false);
+  }, [currentQ, currentSet, isAnswered, recordWordResult, showToast]);
 
   // Item 63 Fix: Don't know / Skip button
   const handleSkipQuestion = () => {
-    if (isAnswered) return;
+    if (isAnswered || submittingRef.current) return;
     handleSelectOption(null); // Triggers wrong answer state showing correct answer
   };
 
@@ -236,7 +288,7 @@ export const LearnView = () => {
       setIsAnswered(false);
     } else {
       setIsFinished(true);
-      if (results.correct > quizQuestions.length / 2) {
+      if (results.correct > quizQuestions.length / 2 && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
       }
     }
@@ -246,7 +298,7 @@ export const LearnView = () => {
   useEffect(() => {
     const handleKeyDown = (e) => {
       const tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || e.target.isContentEditable) {
+      if (e.target.closest?.('[aria-modal="true"]') || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || e.target.isContentEditable) {
         return;
       }
 
@@ -416,6 +468,7 @@ export const LearnView = () => {
             <div className="prompt-content-row">
               <h3 className="prompt-word">{currentQ.promptText}</h3>
               <button 
+                type="button"
                 className="icon-btn-speech"
                 onClick={() => speakWord(currentQ.promptText)}
                 title="Phát âm"
@@ -431,7 +484,8 @@ export const LearnView = () => {
             {currentQ.options.map((option, idx) => {
               const optionLetter = String.fromCharCode(65 + idx); // A, B, C, D
               const isSelected = selectedOption === option;
-              const isCorrectOption = option.toLowerCase().trim() === currentQ.correctAnswer.toLowerCase().trim();
+              const isCorrectOption = currentQ.acceptedAnswers
+                .some(answer => normalizeChoice(answer) === normalizeChoice(option));
 
               let optionClass = 'option-btn';
               if (isAnswered) {
@@ -442,10 +496,13 @@ export const LearnView = () => {
 
               return (
                 <button
+                  type="button"
                   key={idx}
                   className={optionClass}
                   onClick={() => handleSelectOption(option)}
-                  disabled={isAnswered}
+                  disabled={isAnswered || isSubmitting}
+                  aria-pressed={isSelected}
+                  aria-label={`${optionLetter}. ${option}`}
                 >
                   <span className="option-badge">{optionLetter}</span>
                   <span className="option-text">{option}</span>
@@ -456,15 +513,23 @@ export const LearnView = () => {
             })}
           </div>
 
+          <p className="sr-only" role="status" aria-live="assertive" aria-atomic="true">
+            {isAnswered
+              ? currentQ.acceptedAnswers.some(answer => normalizeChoice(answer) === normalizeChoice(selectedOption))
+                ? 'Chính xác.'
+                : `Chưa đúng. Đáp án đúng là ${currentQ.correctAnswer}.`
+              : ''}
+          </p>
+
           {/* Footer Action Bar (Item 56 & 63 Fix: Skip button & Next Question) */}
           <div className="quiz-footer">
             {!isAnswered ? (
-              <button className="btn btn-secondary btn-sm" onClick={handleSkipQuestion}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={handleSkipQuestion} disabled={isSubmitting}>
                 <HelpCircle size={16} />
                 Không biết / Xem đáp án
               </button>
             ) : (
-              <button className="btn btn-primary animate-bounce-short" onClick={handleNextQuestion}>
+              <button type="button" className="btn btn-primary animate-bounce-short" onClick={handleNextQuestion}>
                 <span>Câu tiếp theo (Phím Enter)</span>
                 <ArrowRight size={18} />
               </button>

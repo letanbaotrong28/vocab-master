@@ -1,24 +1,27 @@
 import jwt from 'jsonwebtoken';
 import { getOne } from './db.js';
 
-if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
-  console.error('FATAL ERROR: JWT_SECRET environment variable is required in production mode!');
-  process.exit(1);
+const configuredJwtSecret = process.env.JWT_SECRET?.trim();
+if (!configuredJwtSecret) {
+  throw new Error('JWT_SECRET is required. Refusing to start with a public fallback secret.');
+}
+if (Buffer.byteLength(configuredJwtSecret, 'utf8') < 32) {
+  throw new Error('JWT_SECRET must contain at least 32 bytes.');
 }
 
-export const JWT_SECRET = process.env.JWT_SECRET || 'vocabmaster_default_fallback_secret_key_2026';
+export const JWT_SECRET = configuredJwtSecret;
 
 export const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   if (authHeader && !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Định dạng Bearer Token không hợp lệ.' });
+    return res.status(401).json({ error: 'Định dạng Bearer Token không hợp lệ.', code: 'INVALID_AUTH_HEADER' });
   }
 
   const bearerToken = authHeader?.slice(7).trim();
   const token = bearerToken || req.cookies?.token;
 
   if (!token) {
-    return res.status(401).json({ error: 'Chưa đăng nhập. Vui lòng đăng nhập lại.' });
+    return res.status(401).json({ error: 'Chưa đăng nhập. Vui lòng đăng nhập lại.', code: 'AUTH_REQUIRED' });
   }
 
   jwt.verify(token, JWT_SECRET, {
@@ -27,14 +30,14 @@ export const authenticateToken = async (req, res, next) => {
     audience: 'VocabMasterUser'
   }, async (err, decodedUser) => {
     if (err) {
-      return res.status(403).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ.' });
+      return res.status(401).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ.', code: 'INVALID_SESSION' });
     }
 
     try {
       // Check token version against database for server-side token revocation (Item 42 fix)
       const userDb = await getOne('SELECT id, username, token_version, is_admin FROM users WHERE id = ?', [decodedUser.id]);
       if (!userDb || userDb.token_version !== decodedUser.tokenVersion) {
-        return res.status(401).json({ error: 'Phiên đăng nhập đã bị thu hồi (Đã đăng xuất). Vui lòng đăng nhập lại.' });
+        return res.status(401).json({ error: 'Phiên đăng nhập đã bị thu hồi (Đã đăng xuất). Vui lòng đăng nhập lại.', code: 'SESSION_REVOKED' });
       }
 
       req.user = {

@@ -1,26 +1,58 @@
-import React, { useState, useEffect } from 'react';
-import { storageService } from '../services/storage';
-import { apiService } from '../services/apiService';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { storageService, normalizeSetCollection, normalizeStreak } from '../services/storage';
+import { apiService, retryWithBackoff } from '../services/apiService';
 import { AppContext } from './appContextValue';
+
+const ZERO_STREAK = Object.freeze({ count: 0, lastStudyDate: null });
+const VALID_VIEWS = new Set(['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress']);
+const PROTECTED_VIEWS = new Set(['create', 'edit', 'flashcards', 'learn', 'typing', 'progress']);
+const SET_REQUIRED_VIEWS = new Set(['edit', 'flashcards', 'learn', 'typing', 'progress']);
+
+const buildRouteHash = (view, setId, cardIds) => {
+  let hash = `#${view}`;
+  if (setId !== null && setId !== undefined) hash += `/${encodeURIComponent(String(setId))}`;
+  if (Array.isArray(cardIds) && cardIds.length > 0) {
+    const query = new URLSearchParams();
+    query.set('cards', cardIds.map(String).join(','));
+    hash += `?${query.toString()}`;
+  }
+  return hash;
+};
+
+const parseRouteHash = rawHash => {
+  const raw = String(rawHash || '').replace(/^#/, '');
+  if (!raw) return { view: 'home', setId: null, cardIds: null };
+  const [path, queryString = ''] = raw.split('?');
+  const parts = path.split('/');
+  const view = VALID_VIEWS.has(parts[0]) ? parts[0] : 'home';
+  let setId = null;
+  try {
+    setId = parts[1] ? decodeURIComponent(parts[1]) : null;
+  } catch {
+    return { view: 'home', setId: null, cardIds: null };
+  }
+  const cardIds = new URLSearchParams(queryString).get('cards')
+    ?.split(',')
+    .map(value => value.trim())
+    .filter(Boolean)
+    .slice(0, 1000) || null;
+  return { view, setId, cardIds };
+};
 
 export const AppProvider = ({ children }) => {
   const [sets, setSets] = useState([]);
-  const [activeView, setActiveView] = useState('home'); // 'home' | 'create' | 'edit' | 'flashcards' | 'learn' | 'typing' | 'progress'
+  const [activeView, setActiveView] = useState('home');
   const [currentSetId, setCurrentSetId] = useState(null);
   const [editingSetId, setEditingSetId] = useState(null);
   const [studyCardIds, setStudyCardIds] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [theme, setTheme] = useState(() => storageService.getTheme());
-  const [streak, setStreak] = useState(() => storageService.getStreak());
-  
-  // Auth State
+  const [streak, setStreak] = useState(ZERO_STREAK);
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-
-  // Modals & Notifications
   const [toast, setToast] = useState(null);
-  const [isImportExportOpen, setIsImportExportOpen] = useState(false);
+  const [isImportExportOpenState, setIsImportExportOpenState] = useState(false);
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
     title: '',
@@ -30,226 +62,351 @@ export const AppProvider = ({ children }) => {
     danger: false
   });
 
-  // Reset active session state when auth state changes (Issue 5 fix)
-  const resetSessionState = () => {
-    setActiveView('home');
-    setCurrentSetId(null);
-    setEditingSetId(null);
-    setStudyCardIds(null);
-    setIsAuthModalOpen(false);
-    setIsImportExportOpen(false);
-  };
+  const toastTimerRef = useRef(null);
+  const navigationGuardRef = useRef(null);
+  const previousHashRef = useRef(typeof window === 'undefined' ? '#home' : (window.location.hash || '#home'));
+  const importOpenRef = useRef(false);
 
-  async function checkAuthAndLoadSets() {
-    setIsAuthLoading(true);
-    try {
-      const currentUser = await apiService.getMe();
-      if (currentUser) {
-        setUser(currentUser);
-        setStreak(storageService.getStreak(currentUser.id));
-        const serverSets = await apiService.getSets();
-        setSets(serverSets);
-      } else {
-        setUser(null);
-        setStreak(storageService.getStreak());
-        const localSets = storageService.getSets();
-        setSets(localSets);
-      }
-    } catch (err) {
-      console.error('Auth load error:', err);
-      setUser(null);
-      setStreak(storageService.getStreak());
-      const localSets = storageService.getSets();
-      setSets(localSets);
-    } finally {
-      setIsAuthLoading(false);
-    }
-  }
+  const showToast = useCallback((message, type = 'info', duration = 3000) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, type, id: Date.now() });
+    toastTimerRef.current = setTimeout(() => setToast(null), duration);
+  }, []);
 
-  // Keep the DOM theme synchronized with the persisted React state.
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // Initialize authentication and listen for API-level session expiry.
   useEffect(() => {
-    // Item 66 & 67 Fix: Synchronize React auth state on unauthorized 401/403 event
-    const handleUnauthorized = () => {
-      setUser(null);
-      setStreak(storageService.getStreak());
-      resetSessionState();
-      setSets(storageService.getSets());
-    };
-    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    importOpenRef.current = isImportExportOpenState;
+  }, [isImportExportOpenState]);
 
-    // Initial auth check
-    const timer = setTimeout(checkAuthAndLoadSets, 0);
-
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener('auth:unauthorized', handleUnauthorized);
-    };
+  const applyHomeState = useCallback(({ replaceHash = false } = {}) => {
+    setActiveView('home');
+    setCurrentSetId(null);
+    setEditingSetId(null);
+    setStudyCardIds(null);
+    setIsImportExportOpenState(false);
+    const homeHash = '#home';
+    if (typeof window !== 'undefined' && window.location.hash !== homeHash) {
+      if (replaceHash) window.history.replaceState(null, '', homeHash);
+      else window.history.pushState(null, '', homeHash);
+    }
+    previousHashRef.current = homeHash;
   }, []);
 
-  // Login User Action
-  const loginUser = async (username, password) => {
-    const data = await apiService.login(username, password);
-    setUser(data.user);
-    setStreak(storageService.getStreak(data.user.id));
-    const serverSets = await apiService.getSets();
-    setSets(serverSets);
-    resetSessionState();
-    showToast(`Chào mừng quay trở lại, ${data.user.username}!`, 'success');
-  };
+  const commitAuthenticatedSession = useCallback((nextUser, nextStreak, nextSets) => {
+    const safeStreak = normalizeStreak(nextStreak);
+    const safeSets = normalizeSetCollection(nextSets, { requireCards: false });
+    setUser(nextUser);
+    setStreak(safeStreak);
+    setSets(safeSets);
+    storageService.cacheSession(nextUser, safeStreak);
+    storageService.cacheAccountSets(nextUser.id, safeSets);
+  }, []);
 
-  // Register User Action
-  const registerUser = async (username, password) => {
-    const data = await apiService.register(username, password);
-    setUser(data.user);
-    setStreak(storageService.getStreak(data.user.id));
-
-    // Initial demo sets seed for brand new registered account
-    const localSets = storageService.getSets();
-    if (localSets && localSets.length > 0) {
-      try {
-        const syncedSets = await apiService.syncBatchSets(localSets);
-        setSets(syncedSets);
-        resetSessionState();
-        showToast(`Đăng ký thành công! Đã lưu bộ từ vựng vào tài khoản ${data.user.username}.`, 'success');
-        return;
-      } catch (e) {
-        console.error('Initial sync error on register:', e);
-      }
-    }
-
-    const serverSets = await apiService.getSets();
-    setSets(serverSets);
-    resetSessionState();
-    showToast(`Đăng ký tài khoản mới thành công! Chào mừng ${data.user.username}!`, 'success');
-  };
-
-  // Logout User Action (Item 42 fix: server-side token revocation)
-  const logoutUser = async () => {
-    await apiService.logout();
+  const clearAuthenticatedSession = useCallback(({ announce = false } = {}) => {
     setUser(null);
-    setStreak(storageService.getStreak());
-    const localSets = storageService.getSets();
-    setSets(localSets);
-    resetSessionState();
-    showToast('Đã đăng xuất khỏi thiết bị này.', 'info');
-  };
+    setStreak(ZERO_STREAK);
+    setSets(storageService.getSets());
+    storageService.clearCachedSession();
+    setIsAuthModalOpen(false);
+    applyHomeState({ replaceHash: true });
+    if (announce) showToast('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'warning', 5000);
+  }, [applyHomeState, showToast]);
 
-  // Theme Toggle
-  const toggleTheme = () => {
-    const newTheme = theme === 'light' ? 'dark' : 'light';
-    setTheme(newTheme);
-    storageService.setTheme(newTheme);
-    showToast(`Đã chuyển sang chế độ ${newTheme === 'dark' ? 'Tối (Dark)' : 'Sáng (Light)'}`);
-  };
-
-  // Record streak activity when studying
-  const recordStreak = () => {
-    const updatedStreak = storageService.recordStreakActivity(user?.id);
-    setStreak(updatedStreak);
-  };
-
-  // Item 86 & 125 Fix: URL Hash Navigation & State Clean-up on route changes
-  const navigateTo = (view, setId = null, options = {}) => {
-    setActiveView(view);
-    setStudyCardIds(Array.isArray(options.cardIds) ? options.cardIds.map(String) : null);
-
-    if (view === 'home' || view === 'create') {
-      setCurrentSetId(null);
-      setEditingSetId(null);
-    } else if (setId) {
-      setCurrentSetId(setId);
-      if (view === 'edit') {
-        setEditingSetId(setId);
-      }
-    }
-
-    let hash = `#${view}`;
-    if (setId) hash += `/${encodeURIComponent(setId)}`;
-    if (window.location.hash !== hash) {
-      window.history.pushState(null, '', hash);
-    }
-
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  // Item 87 & 88 Fix: Listen to both popstate and hashchange with safe URI decoding
   useEffect(() => {
-    const handleHashChange = () => {
+    let cancelled = false;
+
+    const loadSession = async () => {
+      setIsAuthLoading(true);
+      const localDate = storageService.getLocalDateString();
       try {
-        const hash = window.location.hash.replace(/^#/, '');
-        if (!hash) {
-          setActiveView('home');
-          setCurrentSetId(null);
-          setEditingSetId(null);
-          setStudyCardIds(null);
+        const authData = await apiService.getMe(localDate);
+        if (cancelled) return;
+        if (!authData?.user) {
+          setUser(null);
+          setStreak(ZERO_STREAK);
+          setSets(storageService.getSets());
+          storageService.clearCachedSession();
           return;
         }
-        const parts = hash.split('/');
-        const view = parts[0];
-        const setId = parts[1] ? decodeURIComponent(parts[1]) : null;
 
-        if (['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress'].includes(view)) {
-          setActiveView(view);
-          setStudyCardIds(null);
-          if (view === 'home' || view === 'create') {
-            setCurrentSetId(null);
-            setEditingSetId(null);
-          } else if (setId) {
-            setCurrentSetId(setId);
-            if (view === 'edit') setEditingSetId(setId);
-          }
+        try {
+          const serverSets = await retryWithBackoff(() => apiService.getSets(), 2, 400);
+          if (!cancelled) commitAuthenticatedSession(authData.user, authData.streak, serverSets);
+        } catch (setsError) {
+          if (cancelled) return;
+          const cachedSets = storageService.getCachedAccountSets(authData.user.id);
+          commitAuthenticatedSession(authData.user, authData.streak, cachedSets);
+          showToast('Đã đăng nhập nhưng tạm thời chưa thể làm mới dữ liệu. Đang hiển thị bản lưu gần nhất.', 'warning', 6000);
+          console.warn('Unable to refresh account sets:', setsError);
         }
-      } catch (e) {
-        console.warn('Invalid URI encoding in route hash:', e);
+      } catch (error) {
+        if (cancelled) return;
+        const cached = storageService.getCachedSession();
+        if (cached?.user) {
+          commitAuthenticatedSession(
+            cached.user,
+            cached.streak,
+            storageService.getCachedAccountSets(cached.user.id)
+          );
+          showToast('Không thể kết nối máy chủ. Đang giữ phiên và dữ liệu đã lưu gần nhất.', 'warning', 6000);
+        } else {
+          setUser(null);
+          setStreak(ZERO_STREAK);
+          setSets(storageService.getSets());
+          showToast('Không thể kiểm tra phiên đăng nhập. Vui lòng thử lại khi mạng ổn định.', 'warning', 6000);
+        }
+        console.warn('Authentication startup failed:', error);
+      } finally {
+        if (!cancelled) setIsAuthLoading(false);
       }
     };
 
-    window.addEventListener('popstate', handleHashChange);
-    window.addEventListener('hashchange', handleHashChange);
-    handleHashChange();
+    const timer = setTimeout(loadSession, 0);
     return () => {
-      window.removeEventListener('popstate', handleHashChange);
-      window.removeEventListener('hashchange', handleHashChange);
+      cancelled = true;
+      clearTimeout(timer);
     };
+  }, [clearAuthenticatedSession, commitAuthenticatedSession, showToast]);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      clearAuthenticatedSession({ announce: true });
+      setIsAuthModalOpen(true);
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+  }, [clearAuthenticatedSession]);
+
+  const requireAuth = useCallback((message = 'Bạn cần đăng nhập hoặc tạo tài khoản để sử dụng tính năng này.') => {
+    if (user) return true;
+    setIsAuthModalOpen(true);
+    showToast(message, 'info', 4500);
+    return false;
+  }, [showToast, user]);
+
+  const loginUser = useCallback(async (username, password) => {
+    const localDate = storageService.getLocalDateString();
+    const data = await apiService.login(username, password, localDate);
+    try {
+      const serverSets = await retryWithBackoff(() => apiService.getSets(), 2, 400);
+      commitAuthenticatedSession(data.user, data.streak, serverSets);
+    } catch (error) {
+      await apiService.logout().catch(() => {});
+      throw new Error(error.message || 'Đăng nhập thành công nhưng không thể tải dữ liệu tài khoản. Vui lòng thử lại.');
+    }
+    setIsAuthModalOpen(false);
+    applyHomeState({ replaceHash: true });
+    showToast(`Chào mừng quay trở lại, ${data.user.username}!`, 'success');
+  }, [applyHomeState, commitAuthenticatedSession, showToast]);
+
+  const registerUser = useCallback(async (username, password) => {
+    const localDate = storageService.getLocalDateString();
+    const data = await apiService.register(username, password, localDate);
+    let syncWarning = null;
+    let serverSets = [];
+    try {
+      const localSets = storageService.getSets().filter(set => Array.isArray(set.cards) && set.cards.length > 0);
+      serverSets = localSets.length > 0
+        ? await apiService.syncBatchSets(localSets)
+        : await apiService.getSets();
+    } catch (error) {
+      syncWarning = error;
+      try {
+        serverSets = await apiService.getSets();
+      } catch {
+        serverSets = storageService.getCachedAccountSets(data.user.id);
+      }
+    }
+    commitAuthenticatedSession(data.user, data.streak, serverSets);
+    setIsAuthModalOpen(false);
+    applyHomeState({ replaceHash: true });
+    if (syncWarning) {
+      showToast(`Đã tạo tài khoản ${data.user.username}, nhưng một phần dữ liệu cục bộ chưa đồng bộ. Bạn có thể nhập lại sau.`, 'warning', 7000);
+    } else {
+      showToast(`Đăng ký thành công. Chào mừng ${data.user.username}!`, 'success');
+    }
+  }, [applyHomeState, commitAuthenticatedSession, showToast]);
+
+  const logoutUser = useCallback(async () => {
+    try {
+      await apiService.logout();
+    } catch (error) {
+      showToast(error.message || 'Không thể đăng xuất trên máy chủ. Vui lòng thử lại.', 'warning', 5000);
+      return false;
+    }
+    clearAuthenticatedSession();
+    showToast('Đã đăng xuất khỏi thiết bị này.', 'info');
+    return true;
+  }, [clearAuthenticatedSession, showToast]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(currentTheme => {
+      const nextTheme = currentTheme === 'light' ? 'dark' : 'light';
+      storageService.setTheme(nextTheme);
+      return nextTheme;
+    });
   }, []);
 
-  // Item 92 Fix: Clear previous toast timer to prevent premature dismissal
-  const toastTimerRef = React.useRef(null);
-  const showToast = (message, type = 'info', duration = 3000) => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToast({ message, type, id: Date.now() });
-    toastTimerRef.current = setTimeout(() => {
-      setToast(null);
-    }, duration);
-  };
+  const setNavigationGuard = useCallback(guard => {
+    navigationGuardRef.current = typeof guard === 'function' ? guard : null;
+  }, []);
 
-  // Save or Update Set
-  const saveSet = async (setData) => {
-    try {
-      if (user) {
-        await apiService.saveSet(setData);
-        const serverSets = await apiService.getSets();
-        setSets(serverSets);
-      } else {
-        const updatedSets = storageService.saveSet(setData);
-        setSets(updatedSets);
-      }
-      showToast('Đã lưu bộ từ vựng thành công!', 'success');
-      navigateTo('home');
-      return true;
-    } catch (err) {
-      showToast(err.message || 'Lỗi khi lưu bộ từ vựng.', 'warning');
-      throw err;
+  const navigateTo = useCallback((view, setId = null, options = {}) => {
+    const safeView = VALID_VIEWS.has(view) ? view : 'home';
+    if (PROTECTED_VIEWS.has(safeView) && !requireAuth()) return false;
+    if (!options.skipGuard && navigationGuardRef.current && safeView !== activeView) {
+      if (!navigationGuardRef.current()) return false;
     }
-  };
+    if (SET_REQUIRED_VIEWS.has(safeView)) {
+      const exists = sets.some(set => String(set.id) === String(setId));
+      if (!setId || !exists) {
+        showToast('Không tìm thấy bộ từ vựng cần mở.', 'warning');
+        applyHomeState({ replaceHash: true });
+        return false;
+      }
+    }
 
-  // Request Confirmation for Delete Set
-  const requestDeleteSet = (setId, setTitle) => {
+    const cardIds = Array.isArray(options.cardIds) ? options.cardIds.map(String) : null;
+    setActiveView(safeView);
+    setStudyCardIds(cardIds);
+    if (safeView === 'home' || safeView === 'create') {
+      setCurrentSetId(null);
+      setEditingSetId(null);
+    } else {
+      setCurrentSetId(setId);
+      setEditingSetId(safeView === 'edit' ? setId : null);
+    }
+
+    const hash = buildRouteHash(safeView, setId, cardIds);
+    if (window.location.hash !== hash) window.history.pushState(null, '', hash);
+    previousHashRef.current = hash;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+    return true;
+  }, [activeView, applyHomeState, requireAuth, sets, showToast]);
+
+  useEffect(() => {
+    if (isAuthLoading) return undefined;
+
+    const applyHashRoute = (fromHistory = false) => {
+      const targetHash = window.location.hash || '#home';
+      if (fromHistory && targetHash !== previousHashRef.current && navigationGuardRef.current) {
+        const allowNavigation = navigationGuardRef.current();
+        if (!allowNavigation) {
+          window.history.pushState(null, '', previousHashRef.current || '#home');
+          return;
+        }
+      }
+
+      const route = parseRouteHash(targetHash);
+      if (PROTECTED_VIEWS.has(route.view) && !user) {
+        applyHomeState({ replaceHash: true });
+        requireAuth('Vui lòng đăng nhập để mở trang này.');
+        return;
+      }
+      if (SET_REQUIRED_VIEWS.has(route.view)) {
+        const exists = route.setId && sets.some(set => String(set.id) === String(route.setId));
+        if (!exists) {
+          applyHomeState({ replaceHash: true });
+          if (route.setId) showToast('Bộ từ vựng trong đường dẫn không tồn tại.', 'warning');
+          return;
+        }
+      }
+
+      setActiveView(route.view);
+      setStudyCardIds(route.cardIds);
+      if (route.view === 'home' || route.view === 'create') {
+        setCurrentSetId(null);
+        setEditingSetId(null);
+      } else {
+        setCurrentSetId(route.setId);
+        setEditingSetId(route.view === 'edit' ? route.setId : null);
+      }
+      const canonicalHash = buildRouteHash(route.view, route.setId, route.cardIds);
+      if (targetHash !== canonicalHash) window.history.replaceState(null, '', canonicalHash);
+      previousHashRef.current = canonicalHash;
+    };
+
+    const handleHistory = () => applyHashRoute(true);
+    window.addEventListener('popstate', handleHistory);
+    window.addEventListener('hashchange', handleHistory);
+    applyHashRoute(false);
+    return () => {
+      window.removeEventListener('popstate', handleHistory);
+      window.removeEventListener('hashchange', handleHistory);
+    };
+  }, [applyHomeState, isAuthLoading, requireAuth, sets, showToast, user]);
+
+  const setIsImportExportOpen = useCallback(nextValue => {
+    const requested = typeof nextValue === 'function' ? nextValue(importOpenRef.current) : nextValue;
+    if (requested && !requireAuth('Vui lòng đăng nhập để sao lưu hoặc khôi phục dữ liệu.')) return;
+    importOpenRef.current = Boolean(requested);
+    setIsImportExportOpenState(Boolean(requested));
+  }, [requireAuth]);
+
+  const refreshAccountSets = useCallback(async () => {
+    const freshSets = normalizeSetCollection(
+      await retryWithBackoff(() => apiService.getSets(), 2, 350),
+      { requireCards: false }
+    );
+    setSets(freshSets);
+    if (user?.id) storageService.cacheAccountSets(user.id, freshSets);
+    return freshSets;
+  }, [user]);
+
+  const saveSet = useCallback(async setData => {
+    if (!requireAuth('Vui lòng đăng nhập trước khi lưu bộ từ vựng.')) return false;
+    try {
+      const response = await apiService.saveSet(setData);
+      let nextSets;
+      if (response?.set) {
+        nextSets = sets.filter(set => String(set.id) !== String(setData.id));
+        const canonicalSet = normalizeSetCollection([response.set], { requireCards: true })[0];
+        if (!canonicalSet) throw new Error('Máy chủ trả về bộ từ vựng không hợp lệ.');
+        nextSets.unshift(canonicalSet);
+      } else {
+        try {
+          nextSets = await refreshAccountSets();
+        } catch (refreshError) {
+          showToast('Bộ từ đã được lưu, nhưng danh sách chưa thể làm mới. Hãy tải lại trang khi mạng ổn định.', 'warning', 6000);
+          console.warn('Set saved but refresh failed:', refreshError);
+          nextSets = sets;
+        }
+      }
+      nextSets = normalizeSetCollection(nextSets, { requireCards: false });
+      setSets(nextSets);
+      storageService.cacheAccountSets(user.id, nextSets);
+      showToast('Đã lưu bộ từ vựng thành công!', 'success');
+      navigateTo('home', null, { skipGuard: true });
+      return true;
+    } catch (error) {
+      if (error.status === 409 || error.data?.code === 'SET_CONFLICT') {
+        try {
+          await refreshAccountSets();
+        } catch (refreshError) {
+          console.warn('Unable to refresh sets after a save conflict:', refreshError);
+        }
+        const conflictError = new Error('Bộ từ này đã được thay đổi ở một phiên khác. Bản đang soạn vẫn được giữ lại; hãy mở lại bộ từ để đối chiếu trước khi lưu.');
+        conflictError.status = 409;
+        showToast(conflictError.message, 'warning', 8000);
+        throw conflictError;
+      }
+      showToast(error.message || 'Lỗi khi lưu bộ từ vựng.', 'warning');
+      throw error;
+    }
+  }, [navigateTo, refreshAccountSets, requireAuth, sets, showToast, user]);
+
+  const requestDeleteSet = useCallback((setId, setTitle) => {
+    if (!requireAuth('Vui lòng đăng nhập trước khi xóa bộ từ vựng.')) return;
+    const targetSet = sets.find(set => String(set.id) === String(setId));
+    const expectedUpdatedAt = Number(targetSet?.updatedAt);
     setConfirmModal({
       isOpen: true,
       title: 'Xóa bộ từ vựng',
@@ -258,113 +415,138 @@ export const AppProvider = ({ children }) => {
       danger: true,
       onConfirm: async () => {
         try {
-          if (user) {
-            await apiService.deleteSet(setId);
-            const serverSets = await apiService.getSets();
-            setSets(serverSets);
-          } else {
-            const remainingSets = storageService.deleteSet(setId);
-            setSets(remainingSets);
-          }
-          if (currentSetId === setId) {
-            setCurrentSetId(null);
-          }
+          await apiService.deleteSet(
+            setId,
+            Number.isSafeInteger(expectedUpdatedAt) ? expectedUpdatedAt : null
+          );
+          setSets(currentSets => {
+            const nextSets = currentSets.filter(set => String(set.id) !== String(setId));
+            storageService.cacheAccountSets(user.id, nextSets);
+            return nextSets;
+          });
+          setConfirmModal(current => ({ ...current, isOpen: false }));
           showToast('Đã xóa bộ từ vựng.', 'warning');
-          setConfirmModal(prev => ({ ...prev, isOpen: false }));
-          if (activeView !== 'home') {
-            navigateTo('home');
+          if (String(currentSetId) === String(setId) || activeView !== 'home') {
+            navigateTo('home', null, { skipGuard: true });
           }
-        } catch (err) {
-          showToast(err.message || 'Lỗi khi xóa bộ từ vựng.', 'warning');
+        } catch (error) {
+          if (error.status === 409 || error.data?.code === 'SET_CONFLICT') {
+            try {
+              await refreshAccountSets();
+            } catch (refreshError) {
+              console.warn('Unable to refresh sets after a delete conflict:', refreshError);
+            }
+            setConfirmModal(current => ({ ...current, isOpen: false }));
+            showToast('Bộ từ này vừa được thay đổi ở một phiên khác nên chưa bị xóa. Danh sách đã được làm mới; hãy kiểm tra rồi thử lại.', 'warning', 8000);
+            return;
+          }
+          showToast(error.message || 'Lỗi khi xóa bộ từ vựng.', 'warning');
         }
       }
     });
-  };
+  }, [activeView, currentSetId, navigateTo, refreshAccountSets, requireAuth, sets, showToast, user]);
 
-  // Update card accuracy metrics
-  const recordWordResult = async (setId, cardId, isCorrect) => {
-    recordStreak();
-    try {
-      if (user) {
-        await apiService.recordWordStats(setId, cardId, isCorrect);
-        // Optimistically update state locally
-        setSets(prevSets => prevSets.map(set => {
-          if (String(set.id) === String(setId)) {
+  const recordWordResult = useCallback(async (setId, cardId, isCorrect) => {
+    if (!requireAuth('Vui lòng đăng nhập trước khi học.')) throw new Error('Bạn chưa đăng nhập.');
+    if (typeof isCorrect !== 'boolean') throw new Error('Kết quả học không hợp lệ.');
+    const studyDate = storageService.getLocalDateString();
+    const result = await apiService.recordWordStats(setId, cardId, isCorrect, studyDate);
+    const nextStreak = normalizeStreak(result?.streak || streak);
+    setStreak(nextStreak);
+    storageService.cacheSession(user, nextStreak);
+    setSets(currentSets => {
+      const nextSets = currentSets.map(set => {
+        if (String(set.id) !== String(setId)) return set;
+        return {
+          ...set,
+          cards: (set.cards || []).map(card => {
+            if (String(card.id) !== String(cardId)) return card;
+            const stats = card.stats || { correct: 0, wrong: 0 };
             return {
-              ...set,
-              cards: set.cards.map(card => {
-                if (String(card.id) === String(cardId)) {
-                  const stats = card.stats || { correct: 0, wrong: 0 };
-                  return {
-                    ...card,
-                    stats: {
-                      correct: isCorrect ? stats.correct + 1 : stats.correct,
-                      wrong: !isCorrect ? stats.wrong + 1 : stats.wrong
-                    }
-                  };
-                }
-                return card;
-              })
+              ...card,
+              stats: {
+                correct: (Number.parseInt(stats.correct, 10) || 0) + (isCorrect ? 1 : 0),
+                wrong: (Number.parseInt(stats.wrong, 10) || 0) + (isCorrect ? 0 : 1)
+              }
             };
-          }
-          return set;
-        }));
-      } else {
-        const updatedSets = storageService.updateWordStats(setId, cardId, isCorrect);
-        setSets(updatedSets);
-      }
-    } catch (err) {
-      console.error('Error recording word result:', err);
-    }
-  };
+          })
+        };
+      });
+      storageService.cacheAccountSets(user.id, nextSets);
+      return nextSets;
+    });
+    return result;
+  }, [requireAuth, streak, user]);
 
-  // Request Confirmation for Reset Progress
-  const requestResetProgress = (setId = 'all', setTitle = '') => {
-    const msg = setId === 'all'
-      ? 'Bạn có chắc chắn muốn làm mới toàn bộ tiến trình học của tất cả các bộ từ?'
-      : `Bạn có chắc chắn muốn làm mới tiến trình học của bộ từ "${setTitle}"?`;
-
+  const requestResetProgress = useCallback((setId = 'all', setTitle = '') => {
+    if (!requireAuth('Vui lòng đăng nhập trước khi đặt lại tiến trình.')) return;
+    const message = setId === 'all'
+      ? 'Bạn có chắc chắn muốn đặt lại tiến trình của tất cả bộ từ?'
+      : `Bạn có chắc chắn muốn đặt lại tiến trình của bộ từ "${setTitle}"?`;
     setConfirmModal({
       isOpen: true,
       title: 'Đặt lại tiến trình học',
-      message: msg,
+      message,
       confirmText: 'Đặt lại',
       danger: true,
       onConfirm: async () => {
         try {
-          if (user) {
-            await apiService.resetProgress(setId);
-            const serverSets = await apiService.getSets();
-            setSets(serverSets);
-          } else {
-            const updatedSets = storageService.resetProgress(setId);
-            setSets(updatedSets);
-          }
-          showToast('Đã làm mới tiến trình học thành công.', 'info');
-          setConfirmModal(prev => ({ ...prev, isOpen: false }));
-        } catch (err) {
-          showToast(err.message || 'Lỗi khi đặt lại tiến trình.', 'warning');
+          await apiService.resetProgress(setId);
+          setSets(currentSets => {
+            const nextSets = currentSets.map(set => (
+              setId === 'all' || String(set.id) === String(setId)
+                ? { ...set, cards: (set.cards || []).map(card => ({ ...card, stats: { correct: 0, wrong: 0 } })) }
+                : set
+            ));
+            storageService.cacheAccountSets(user.id, nextSets);
+            return nextSets;
+          });
+          setConfirmModal(current => ({ ...current, isOpen: false }));
+          showToast('Đã đặt lại tiến trình học.', 'info');
+        } catch (error) {
+          showToast(error.message || 'Lỗi khi đặt lại tiến trình.', 'warning');
         }
       }
     });
-  };
+  }, [requireAuth, showToast, user]);
 
-  // Refresh sets after import (Issue 4 fix: returns promise and throws error on failure)
-  const handleImportSuccess = async (importedSets) => {
-    if (user) {
-      const serverSets = await apiService.syncBatchSets(importedSets);
+  const handleImportSuccess = useCallback(async importedSets => {
+    if (!requireAuth('Vui lòng đăng nhập trước khi nhập dữ liệu.')) throw new Error('Bạn chưa đăng nhập.');
+    const setsWithRevisions = importedSets.map(importedSet => {
+      const current = sets.find(set => String(set.id) === String(importedSet.id));
+      const expectedUpdatedAt = Number(current?.updatedAt);
+      return current && Number.isSafeInteger(expectedUpdatedAt)
+        ? { ...importedSet, expectedUpdatedAt }
+        : importedSet;
+    });
+    try {
+      const serverSets = normalizeSetCollection(
+        await apiService.syncBatchSets(setsWithRevisions),
+        { requireCards: false }
+      );
       setSets(serverSets);
-    } else {
-      storageService.saveSets(importedSets);
-      setSets(importedSets);
+      storageService.cacheAccountSets(user.id, serverSets);
+      return serverSets;
+    } catch (error) {
+      if (error.status === 409 || error.data?.code === 'SET_CONFLICT') {
+        try {
+          await refreshAccountSets();
+        } catch (refreshError) {
+          console.warn('Unable to refresh sets after an import conflict:', refreshError);
+        }
+        const conflictError = new Error('Một bộ từ trùng ID đã được thay đổi ở phiên khác. Dữ liệu mới nhất đã được tải lại; hãy xuất bản sao lưu rồi đối chiếu trước khi nhập lại.');
+        conflictError.status = 409;
+        throw conflictError;
+      }
+      throw error;
     }
-  };
+  }, [refreshAccountSets, requireAuth, sets, user]);
 
   const currentSet = currentSetId === null
     ? null
-    : sets.find(s => String(s.id) === String(currentSetId)) || null;
+    : sets.find(set => String(set.id) === String(currentSetId)) || null;
 
-  const contextValue = {
+  const contextValue = useMemo(() => ({
     sets,
     activeView,
     currentSetId,
@@ -375,32 +557,37 @@ export const AppProvider = ({ children }) => {
     setSearchQuery,
     theme,
     toggleTheme,
-    streak,
-    recordStreak,
+    streak: user ? streak : ZERO_STREAK,
     user,
     isAuthLoading,
     isAuthModalOpen,
     setIsAuthModalOpen,
+    requireAuth,
     loginUser,
     registerUser,
     logoutUser,
     navigateTo,
+    setNavigationGuard,
     saveSet,
     requestDeleteSet,
     recordWordResult,
     requestResetProgress,
     toast,
     showToast,
-    isImportExportOpen,
+    isImportExportOpen: isImportExportOpenState,
     setIsImportExportOpen,
     handleImportSuccess,
     confirmModal,
     setConfirmModal
-  };
+  }), [
+    sets, activeView, currentSetId, editingSetId, studyCardIds, currentSet,
+    searchQuery, theme, toggleTheme, streak, user, isAuthLoading,
+    isAuthModalOpen, requireAuth, loginUser, registerUser, logoutUser,
+    navigateTo, setNavigationGuard, saveSet, requestDeleteSet,
+    recordWordResult, requestResetProgress, toast, showToast,
+    isImportExportOpenState, setIsImportExportOpen, handleImportSuccess,
+    confirmModal
+  ]);
 
-  return (
-    <AppContext.Provider value={contextValue}>
-      {children}
-    </AppContext.Provider>
-  );
+  return <AppContext.Provider value={contextValue}>{children}</AppContext.Provider>;
 };

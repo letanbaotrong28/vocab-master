@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   Search, 
   Plus, 
@@ -27,31 +27,39 @@ export const HomeView = () => {
   const [visibleCount, setVisibleCount] = useState(20); // Item 113 Fix: Batch rendering for performance
 
   // Item 106 Fix: Safe dereferencing of title, description, cards
-  const filteredSets = sets.filter(set => {
-    if (!set || typeof set !== 'object') return false;
-    const q = (searchQuery || '').toLowerCase().trim();
-    if (!q) return true;
+  const filteredSets = useMemo(() => {
+    const query = (searchQuery || '').toLowerCase().trim();
+    return sets.filter(set => {
+      if (!set || typeof set !== 'object') return false;
+      if (!query) return true;
 
-    const titleStr = (set.title || '').toString().toLowerCase();
-    const descStr = (set.description || '').toString().toLowerCase();
-    const cardsArr = Array.isArray(set.cards) ? set.cards : [];
+      const title = String(set.title || '').toLowerCase();
+      const description = String(set.description || '').toLowerCase();
+      const cards = Array.isArray(set.cards) ? set.cards : [];
+      return title.includes(query)
+        || description.includes(query)
+        || cards.some(card => (
+          String(card?.english || '').toLowerCase().includes(query)
+          || String(card?.vietnamese || '').toLowerCase().includes(query)
+        ));
+    });
+  }, [searchQuery, sets]);
 
-    return (
-      titleStr.includes(q) ||
-      descStr.includes(q) ||
-      cardsArr.some(c => 
-        (c?.english || '').toString().toLowerCase().includes(q) || 
-        (c?.vietnamese || '').toString().toLowerCase().includes(q)
-      )
-    );
-  });
-
-  const visibleSets = filteredSets.slice(0, visibleCount);
+  const visibleSets = useMemo(
+    () => filteredSets.slice(0, visibleCount),
+    [filteredSets, visibleCount]
+  );
 
   const formatDate = (timestamp) => {
     if (!timestamp) return '';
     const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '';
     return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+
+  const formatDateTime = (timestamp) => {
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   };
 
   return (
@@ -63,10 +71,10 @@ export const HomeView = () => {
             Chinh Phục Từ Vựng Tiếng Anh <span className="highlight">Dễ Dàng & Hiệu Quả</span>
           </h1>
           <p className="hero-subtitle">
-            Học từ vựng thông minh với Flashcards, Trắc nghiệm, Luyện gõ từ và Theo dõi tiến trình 100% riêng tư trên máy của bạn.
+            Học từ vựng thông minh với Flashcards, Trắc nghiệm, Luyện gõ từ và Theo dõi tiến trình — lưu trên thiết bị hoặc đồng bộ với tài khoản của bạn.
           </p>
           <div className="hero-actions">
-            <button className="btn btn-primary btn-lg" onClick={() => navigateTo('create')}>
+            <button type="button" className="btn btn-primary btn-lg" onClick={() => navigateTo('create')}>
               <Plus size={20} />
               Tạo bộ từ vựng mới
             </button>
@@ -83,7 +91,7 @@ export const HomeView = () => {
           </label>
           <input
             id="home-search-input"
-            type="text"
+            type="search"
             className="search-input"
             placeholder="Tìm kiếm bộ từ vựng, từ tiếng Anh hoặc nghĩa tiếng Việt..."
             value={searchQuery}
@@ -94,6 +102,7 @@ export const HomeView = () => {
           />
           {searchQuery && (
             <button 
+              type="button"
               className="clear-search-btn" 
               onClick={() => {
                 setSearchQuery('');
@@ -106,7 +115,7 @@ export const HomeView = () => {
           )}
         </div>
 
-        <div className="set-stats-counter">
+        <div className="set-stats-counter" role="status" aria-live="polite" aria-atomic="true">
           <span>Hiển thị <strong>{visibleSets.length}</strong> / {filteredSets.length} bộ từ vựng</span>
         </div>
       </div>
@@ -126,19 +135,7 @@ export const HomeView = () => {
 
               return (
                 <div key={set.id} className="set-list-item">
-                  <div 
-                    className="set-item-main" 
-                    onClick={() => navigateTo('flashcards', set.id)}
-                    onKeyDown={(e) => {
-                      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('set-item-main')) {
-                        e.preventDefault();
-                        navigateTo('flashcards', set.id);
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Mở bộ từ vựng ${set.title || ''}`}
-                  >
+                  <div className="set-item-main">
                     {/* Top Meta Line */}
                     <div className="set-item-top-row">
                       <div className="set-badge-row">
@@ -152,29 +149,26 @@ export const HomeView = () => {
                           </span>
                         )}
                         {set.updatedAt && (
-                          <span className="set-date-badge">
-                            <Clock size={13} /> {formatDate(set.updatedAt)}
-                          </span>
+                          <time className="set-date-badge" dateTime={formatDateTime(set.updatedAt)}>
+                            <Clock size={13} aria-hidden="true" /> {formatDate(set.updatedAt)}
+                          </time>
                         )}
                       </div>
 
-                      {/* Item 108 Fix: Stop event propagation on child buttons */}
-                      <div 
-                        className="set-action-menu" 
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => e.stopPropagation()}
-                      >
+                      <div className="set-action-menu">
                         <button 
+                          type="button"
                           className="action-icon-btn edit" 
-                          onClick={(e) => { e.stopPropagation(); navigateTo('edit', set.id); }}
+                          onClick={() => navigateTo('edit', set.id)}
                           title="Chỉnh sửa bộ từ"
                           aria-label={`Chỉnh sửa bộ từ ${set.title}`}
                         >
                           <Edit3 size={18} />
                         </button>
                         <button 
+                          type="button"
                           className="action-icon-btn delete" 
-                          onClick={(e) => { e.stopPropagation(); requestDeleteSet(set.id, set.title); }}
+                          onClick={() => requestDeleteSet(set.id, set.title)}
                           title="Xóa bộ từ"
                           aria-label={`Xóa bộ từ ${set.title}`}
                         >
@@ -185,7 +179,16 @@ export const HomeView = () => {
 
                     {/* Title & Description */}
                     <div className="set-item-content">
-                      <h3 className="set-title">{set.title}</h3>
+                      <h3 className="set-title">
+                        <button
+                          type="button"
+                          className="set-title-button"
+                          onClick={() => navigateTo('flashcards', set.id)}
+                          aria-label={`Mở Flashcards của bộ ${set.title || 'không tên'}`}
+                        >
+                          {set.title}
+                        </button>
+                      </h3>
                       {set.description && (
                         <p className="set-description">{set.description}</p>
                       )}
@@ -195,6 +198,7 @@ export const HomeView = () => {
                   {/* Bottom Action Bar: Study Mode Buttons */}
                   <div className="set-item-actions">
                     <button 
+                      type="button"
                       className="mode-btn flashcards"
                       onClick={() => navigateTo('flashcards', set.id)}
                       title="Thẻ ghi nhớ"
@@ -205,6 +209,7 @@ export const HomeView = () => {
                     </button>
 
                     <button 
+                      type="button"
                       className="mode-btn learn"
                       onClick={() => navigateTo('learn', set.id)}
                       title="Trắc nghiệm 4 đáp án"
@@ -215,6 +220,7 @@ export const HomeView = () => {
                     </button>
 
                     <button 
+                      type="button"
                       className="mode-btn typing"
                       onClick={() => navigateTo('typing', set.id)}
                       title="Luyện gõ từ tiếng Anh"
@@ -225,6 +231,7 @@ export const HomeView = () => {
                     </button>
 
                     <button 
+                      type="button"
                       className="mode-btn progress"
                       onClick={() => navigateTo('progress', set.id)}
                       title="Xem tiến trình chi tiết"
@@ -243,6 +250,7 @@ export const HomeView = () => {
           {visibleCount < filteredSets.length && (
             <div className="text-center mt-6 mb-8">
               <button 
+                type="button"
                 className="btn btn-secondary btn-lg"
                 onClick={() => setVisibleCount(prev => prev + 20)}
               >
@@ -263,7 +271,7 @@ export const HomeView = () => {
               ? `Không có kết quả nào phù hợp với từ khóa "${searchQuery}".`
               : 'Bạn chưa có bộ từ vựng nào. Hãy khởi tạo bộ từ đầu tiên để bắt đầu học!'}
           </p>
-          <button className="btn btn-primary" onClick={() => navigateTo('create')}>
+          <button type="button" className="btn btn-primary" onClick={() => navigateTo('create')}>
             <Plus size={18} />
             Tạo bộ từ vựng mới
           </button>

@@ -14,13 +14,23 @@ import { authenticateToken } from './authMiddleware.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const requestBodyLimit = process.env.REQUEST_BODY_LIMIT || '10mb';
 
-// Render/Cloudflare terminates TLS before forwarding requests to Express.
-app.set('trust proxy', 1);
+// Trust only explicitly configured proxy networks. A numeric hop count lets a
+// client that reaches Express directly spoof X-Forwarded-For and evade the
+// authentication rate limit. Render's internal proxy is covered by the private
+// network aliases below; other providers can supply their documented CIDRs.
+const configuredProxyRanges = (process.env.TRUST_PROXY || 'loopback,linklocal,uniquelocal')
+  .split(',')
+  .map(value => value.trim())
+  .filter(Boolean);
+app.set('trust proxy', configuredProxyRanges);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const distPath = path.join(__dirname, '../dist');
+const distPath = process.env.DIST_PATH
+  ? path.resolve(process.env.DIST_PATH)
+  : path.join(__dirname, '../dist');
 
 const configuredOrigins = (process.env.CLIENT_ORIGIN || '')
   .split(',')
@@ -37,6 +47,22 @@ const developmentOrigins = process.env.NODE_ENV === 'production'
       'http://localhost:4173'
     ];
 const allowedOrigins = new Set([...configuredOrigins, ...developmentOrigins]);
+const isPrivateDevelopmentOrigin = (origin) => {
+  if (process.env.NODE_ENV === 'production') return false;
+  try {
+    const parsed = new URL(origin);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    if (parsed.port && !['4173', '5000', '5173'].includes(parsed.port)) return false;
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (hostname === 'localhost' || hostname === '::1') return true;
+    if (/^10\./.test(hostname) || /^192\.168\./.test(hostname)) return true;
+    const secondOctet = Number(hostname.split('.')[1]);
+    if (/^172\./.test(hostname) && secondOctet >= 16 && secondOctet <= 31) return true;
+    return /^(fc|fd|fe8|fe9|fea|feb)/.test(hostname);
+  } catch {
+    return false;
+  }
+};
 
 // Security headers
 app.use(helmet({
@@ -58,7 +84,7 @@ const apiCors = cors({
     // Allow requests with no origin, such as server-to-server and mobile clients.
     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.has(origin)) {
+    if (allowedOrigins.has(origin) || isPrivateDevelopmentOrigin(origin)) {
       return callback(null, true);
     }
 
@@ -81,8 +107,8 @@ app.use('/api', (req, res, next) => {
   return apiCors(req, res, next);
 });
 
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ limit: '2mb', extended: true }));
+app.use(express.json({ limit: requestBodyLimit }));
+app.use(express.urlencoded({ limit: requestBodyLimit, extended: true }));
 
 // Item 29 Fix: CSRF Validation Header Check for Mutating API Endpoints
 app.use((req, res, next) => {
@@ -95,41 +121,6 @@ app.use((req, res, next) => {
   }
   next();
 });
-
-// Item 80 Fix: Memory Pruning Timer for Rate Limiter Map
-const rateLimitMap = new Map();
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, record] of rateLimitMap.entries()) {
-    if (now > record.resetTime) {
-      rateLimitMap.delete(ip);
-    }
-  }
-}, 10 * 60 * 1000);
-
-const rateLimiter = (maxRequests = 100, windowMs = 60000) => (req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
-  const now = Date.now();
-  const record = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs };
-
-  if (now > record.resetTime) {
-    record.count = 1;
-    record.resetTime = now + windowMs;
-  } else {
-    record.count += 1;
-  }
-
-  rateLimitMap.set(ip, record);
-
-  if (record.count > maxRequests) {
-    return res.status(429).json({ error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau 1 phút.' });
-  }
-  next();
-};
-
-app.use('/api/sets/word-stats', rateLimiter(120, 60000));
-app.use('/api/sets/reset-progress', rateLimiter(10, 60000));
-app.use('/api/sets/sync-batch', rateLimiter(20, 60000));
 
 // Item 59 Fix: Structured Request Logging & Request ID Response Header
 app.use((req, res, next) => {
@@ -169,7 +160,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 // Item 58, 127 & P0 Fix (11, 12): Database Backup Download Endpoint with Admin Authorization & PostgreSQL Check
-app.get('/api/admin/backup', authenticateToken, async (req, res) => {
+app.get('/api/admin/backup', authenticateToken, async (req, res, next) => {
   try {
     if (!req.user.isAdmin) {
       return res.status(403).json({ error: 'Bạn không có quyền truy cập endpoint quản trị.' });
@@ -180,29 +171,31 @@ app.get('/api/admin/backup', authenticateToken, async (req, res) => {
     }
 
     const dbPath = process.env.SQLITE_DB_PATH || path.join(__dirname, 'database.db');
-    const backupPath = path.join(os.tmpdir(), `vocabmaster_backup_${Date.now()}.db`);
+    const backupDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vocabmaster-backup-'));
+    const backupPath = path.join(backupDirectory, 'database.db');
+    const cleanupBackup = () => fs.promises.rm(backupDirectory, { recursive: true, force: true });
 
     if (fs.existsSync(dbPath)) {
       try {
         await run(`VACUUM INTO ?`, [backupPath]);
         res.download(backupPath, path.basename(backupPath), (downloadErr) => {
-          try {
-            if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
-          } catch (cleanupErr) {
-            console.error('Backup cleanup error:', cleanupErr.message);
-          }
-          if (downloadErr) console.error('Backup download error:', downloadErr.message);
+          cleanupBackup()
+            .catch((cleanupErr) => {
+              console.error('Backup cleanup error:', cleanupErr.message);
+            })
+            .finally(() => {
+              if (downloadErr) next(downloadErr);
+            });
         });
       } catch (vErr) {
-        try {
-          if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
-        } catch (cleanupErr) {
+        await cleanupBackup().catch((cleanupErr) => {
           console.error('Backup cleanup error:', cleanupErr.message);
-        }
+        });
         console.error('SQLite backup error:', vErr.message);
         return res.status(500).json({ error: 'Không thể tạo bản sao lưu SQLite nhất quán.' });
       }
     } else {
+      await cleanupBackup().catch(() => {});
       res.status(404).json({ error: 'Không tìm thấy file CSDL SQLite cục bộ.' });
     }
   } catch (err) {
@@ -280,6 +273,12 @@ app.use((err, req, res, next) => {
   }
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Nội dung JSON không hợp lệ.' });
+  }
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({ error: 'Nội dung yêu cầu vượt quá giới hạn cho phép.', code: 'PAYLOAD_TOO_LARGE' });
+  }
+  if (err.type === 'charset.unsupported' || err.status === 415) {
+    return res.status(415).json({ error: 'Định dạng nội dung yêu cầu không được hỗ trợ.', code: 'UNSUPPORTED_MEDIA_TYPE' });
   }
 
   console.error('Unhandled request error:', err);
