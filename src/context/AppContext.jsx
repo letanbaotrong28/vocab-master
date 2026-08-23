@@ -1,12 +1,26 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storageService, normalizeSetCollection, normalizeStreak } from '../services/storage';
 import { apiService, retryWithBackoff } from '../services/apiService';
+import { prepareViewForNavigation } from '../services/viewLoader';
 import { AppContext } from './appContextValue';
 
 const ZERO_STREAK = Object.freeze({ count: 0, lastStudyDate: null });
 const VALID_VIEWS = new Set(['home', 'create', 'edit', 'flashcards', 'learn', 'typing', 'progress']);
 const PROTECTED_VIEWS = new Set(['create', 'edit', 'flashcards', 'learn', 'typing', 'progress']);
 const SET_REQUIRED_VIEWS = new Set(['edit', 'flashcards', 'learn', 'typing', 'progress']);
+
+const retryBusyMutation = async (operation, maxAttempts = 3) => {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const canRetry = error.data?.code === 'MUTATION_BUSY' && attempt < maxAttempts - 1;
+      if (!canRetry) throw error;
+      await new Promise(resolve => setTimeout(resolve, 180 * (attempt + 1)));
+    }
+  }
+  return null;
+};
 
 const buildRouteHash = (view, setId, cardIds) => {
   let hash = `#${view}`;
@@ -64,6 +78,10 @@ export const AppProvider = ({ children }) => {
 
   const toastTimerRef = useRef(null);
   const navigationGuardRef = useRef(null);
+  const studyWriteQueueRef = useRef(Promise.resolve());
+  const activeUserIdRef = useRef(null);
+  const progressRevisionRef = useRef(0);
+  const navigationRequestRef = useRef(0);
   const previousHashRef = useRef(typeof window === 'undefined' ? '#home' : (window.location.hash || '#home'));
   const importOpenRef = useRef(false);
 
@@ -86,6 +104,7 @@ export const AppProvider = ({ children }) => {
   }, [isImportExportOpenState]);
 
   const applyHomeState = useCallback(({ replaceHash = false } = {}) => {
+    navigationRequestRef.current += 1;
     setActiveView('home');
     setCurrentSetId(null);
     setEditingSetId(null);
@@ -103,6 +122,7 @@ export const AppProvider = ({ children }) => {
     const safeStreak = normalizeStreak(nextStreak);
     const safeSets = normalizeSetCollection(nextSets, { requireCards: false });
     setUser(nextUser);
+    activeUserIdRef.current = nextUser.id;
     setStreak(safeStreak);
     setSets(safeSets);
     storageService.cacheSession(nextUser, safeStreak);
@@ -110,6 +130,7 @@ export const AppProvider = ({ children }) => {
   }, []);
 
   const clearAuthenticatedSession = useCallback(({ announce = false } = {}) => {
+    activeUserIdRef.current = null;
     setUser(null);
     setStreak(ZERO_STREAK);
     setSets(storageService.getSets());
@@ -274,21 +295,36 @@ export const AppProvider = ({ children }) => {
     }
 
     const cardIds = Array.isArray(options.cardIds) ? options.cardIds.map(String) : null;
-    setActiveView(safeView);
-    setStudyCardIds(cardIds);
-    if (safeView === 'home' || safeView === 'create') {
-      setCurrentSetId(null);
-      setEditingSetId(null);
+    const requestId = ++navigationRequestRef.current;
+    const commitView = () => {
+      if (requestId !== navigationRequestRef.current) return;
+      startTransition(() => {
+        setActiveView(safeView);
+        setStudyCardIds(cardIds);
+        if (safeView === 'home' || safeView === 'create') {
+          setCurrentSetId(null);
+          setEditingSetId(null);
+        } else {
+          setCurrentSetId(setId);
+          setEditingSetId(safeView === 'edit' ? setId : null);
+        }
+      });
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+    };
+
+    if (safeView === 'home') {
+      commitView();
     } else {
-      setCurrentSetId(setId);
-      setEditingSetId(safeView === 'edit' ? setId : null);
+      prepareViewForNavigation(safeView).then(commitView).catch(error => {
+        if (requestId !== navigationRequestRef.current) return;
+        showToast(error.message || 'Không thể tải màn hình. Vui lòng thử lại.', 'warning');
+      });
     }
 
     const hash = buildRouteHash(safeView, setId, cardIds);
     if (window.location.hash !== hash) window.history.pushState(null, '', hash);
     previousHashRef.current = hash;
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
     return true;
   }, [activeView, applyHomeState, requireAuth, sets, showToast]);
 
@@ -320,15 +356,27 @@ export const AppProvider = ({ children }) => {
         }
       }
 
-      setActiveView(route.view);
-      setStudyCardIds(route.cardIds);
-      if (route.view === 'home' || route.view === 'create') {
-        setCurrentSetId(null);
-        setEditingSetId(null);
-      } else {
-        setCurrentSetId(route.setId);
-        setEditingSetId(route.view === 'edit' ? route.setId : null);
-      }
+      const requestId = ++navigationRequestRef.current;
+      const commitRoute = () => {
+        if (requestId !== navigationRequestRef.current) return;
+        startTransition(() => {
+          setActiveView(route.view);
+          setStudyCardIds(route.cardIds);
+          if (route.view === 'home' || route.view === 'create') {
+            setCurrentSetId(null);
+            setEditingSetId(null);
+          } else {
+            setCurrentSetId(route.setId);
+            setEditingSetId(route.view === 'edit' ? route.setId : null);
+          }
+        });
+      };
+      if (route.view === 'home') commitRoute();
+      else prepareViewForNavigation(route.view).then(commitRoute).catch(error => {
+        if (requestId !== navigationRequestRef.current) return;
+        applyHomeState({ replaceHash: true });
+        showToast(error.message || 'Không thể tải màn hình. Đã quay lại trang chủ.', 'warning');
+      });
       const canonicalHash = buildRouteHash(route.view, route.setId, route.cardIds);
       if (targetHash !== canonicalHash) window.history.replaceState(null, '', canonicalHash);
       previousHashRef.current = canonicalHash;
@@ -352,42 +400,87 @@ export const AppProvider = ({ children }) => {
   }, [requireAuth]);
 
   const refreshAccountSets = useCallback(async () => {
+    const expectedUserId = user?.id;
     const freshSets = normalizeSetCollection(
       await retryWithBackoff(() => apiService.getSets(), 2, 350),
       { requireCards: false }
     );
+    if (String(activeUserIdRef.current) !== String(expectedUserId)) return freshSets;
     setSets(freshSets);
-    if (user?.id) storageService.cacheAccountSets(user.id, freshSets);
+    if (expectedUserId) storageService.cacheAccountSets(expectedUserId, freshSets);
     return freshSets;
   }, [user]);
 
   const saveSet = useCallback(async setData => {
     if (!requireAuth('Vui lòng đăng nhập trước khi lưu bộ từ vựng.')) return false;
+    const previousSet = sets.find(set => String(set.id) === String(setData.id)) || null;
+    const optimisticRevision = Date.now();
+    const optimisticSet = normalizeSetCollection([{
+      ...setData,
+      updatedAt: optimisticRevision
+    }], { requireCards: true })[0];
+    if (!optimisticSet) throw new Error('Bộ từ vựng không hợp lệ.');
+    const mutationId = `save-${optimisticRevision}-${Math.random().toString(36).slice(2, 9)}`;
+    const pendingSet = { ...optimisticSet, _syncing: true, _mutationId: mutationId };
+
+    setSets(currentSets => {
+      const nextSets = currentSets.filter(set => String(set.id) !== String(setData.id));
+      nextSets.unshift(pendingSet);
+      return nextSets;
+    });
+    navigateTo('home', null, { skipGuard: true });
+    showToast('Đã cập nhật giao diện. Đang lưu bộ từ lên tài khoản...', 'info', 2500);
+
     try {
-      const response = await apiService.saveSet(setData);
-      let nextSets;
+      const saveWrite = studyWriteQueueRef.current
+        .catch(() => undefined)
+        .then(() => retryBusyMutation(() => apiService.saveSet(setData)));
+      studyWriteQueueRef.current = saveWrite;
+      const response = await saveWrite;
+      if (String(activeUserIdRef.current) !== String(user.id)) return true;
       if (response?.set) {
-        nextSets = sets.filter(set => String(set.id) !== String(setData.id));
         const canonicalSet = normalizeSetCollection([response.set], { requireCards: true })[0];
         if (!canonicalSet) throw new Error('Máy chủ trả về bộ từ vựng không hợp lệ.');
-        nextSets.unshift(canonicalSet);
+        setSets(currentSets => {
+          const pendingIndex = currentSets.findIndex(set => set._mutationId === mutationId);
+          const nextSets = currentSets.filter(set => (
+            set._mutationId !== mutationId
+            && String(set.id) !== String(canonicalSet.id)
+          ));
+          nextSets.splice(Math.max(0, pendingIndex), 0, canonicalSet);
+          storageService.cacheAccountSets(user.id, nextSets);
+          return nextSets;
+        });
       } else {
         try {
-          nextSets = await refreshAccountSets();
+          await refreshAccountSets();
         } catch (refreshError) {
           showToast('Bộ từ đã được lưu, nhưng danh sách chưa thể làm mới. Hãy tải lại trang khi mạng ổn định.', 'warning', 6000);
           console.warn('Set saved but refresh failed:', refreshError);
-          nextSets = sets;
+          setSets(currentSets => {
+            const nextSets = currentSets.map(set => (
+              set._mutationId === mutationId
+                ? Object.fromEntries(Object.entries(set).filter(([key]) => !key.startsWith('_')))
+                : set
+            ));
+            storageService.cacheAccountSets(user.id, nextSets);
+            return nextSets;
+          });
         }
       }
-      nextSets = normalizeSetCollection(nextSets, { requireCards: false });
-      setSets(nextSets);
-      storageService.cacheAccountSets(user.id, nextSets);
       showToast('Đã lưu bộ từ vựng thành công!', 'success');
-      navigateTo('home', null, { skipGuard: true });
       return true;
     } catch (error) {
-      if (error.status === 409 || error.data?.code === 'SET_CONFLICT') {
+      if (String(activeUserIdRef.current) !== String(user.id)) return false;
+      setSets(currentSets => {
+        const pendingIndex = currentSets.findIndex(set => set._mutationId === mutationId);
+        if (pendingIndex < 0) return currentSets;
+        const nextSets = currentSets.filter(set => set._mutationId !== mutationId);
+        if (previousSet) nextSets.splice(pendingIndex, 0, previousSet);
+        storageService.cacheAccountSets(user.id, nextSets);
+        return nextSets;
+      });
+      if (error.data?.code === 'SET_CONFLICT') {
         try {
           await refreshAccountSets();
         } catch (refreshError) {
@@ -406,6 +499,7 @@ export const AppProvider = ({ children }) => {
   const requestDeleteSet = useCallback((setId, setTitle) => {
     if (!requireAuth('Vui lòng đăng nhập trước khi xóa bộ từ vựng.')) return;
     const targetSet = sets.find(set => String(set.id) === String(setId));
+    const targetIndex = sets.findIndex(set => String(set.id) === String(setId));
     const expectedUpdatedAt = Number(targetSet?.updatedAt);
     setConfirmModal({
       isOpen: true,
@@ -414,31 +508,56 @@ export const AppProvider = ({ children }) => {
       confirmText: 'Xóa ngay',
       danger: true,
       onConfirm: async () => {
+        setConfirmModal(current => ({ ...current, isOpen: false }));
+        setSets(currentSets => {
+          const nextSets = currentSets.filter(set => String(set.id) !== String(setId));
+          return nextSets;
+        });
+        if (String(currentSetId) === String(setId) || activeView !== 'home') {
+          navigateTo('home', null, { skipGuard: true });
+        }
+        showToast('Đã xóa khỏi giao diện. Đang đồng bộ với tài khoản...', 'info', 2500);
         try {
-          await apiService.deleteSet(
-            setId,
-            Number.isSafeInteger(expectedUpdatedAt) ? expectedUpdatedAt : null
-          );
+          const deleteWrite = studyWriteQueueRef.current
+            .catch(() => undefined)
+            .then(() => retryBusyMutation(() => apiService.deleteSet(
+                setId,
+                Number.isSafeInteger(expectedUpdatedAt) ? expectedUpdatedAt : null
+              ))
+            );
+          studyWriteQueueRef.current = deleteWrite;
+          await deleteWrite;
           setSets(currentSets => {
-            const nextSets = currentSets.filter(set => String(set.id) !== String(setId));
-            storageService.cacheAccountSets(user.id, nextSets);
-            return nextSets;
+            storageService.cacheAccountSets(user.id, currentSets);
+            return currentSets;
           });
-          setConfirmModal(current => ({ ...current, isOpen: false }));
           showToast('Đã xóa bộ từ vựng.', 'warning');
-          if (String(currentSetId) === String(setId) || activeView !== 'home') {
-            navigateTo('home', null, { skipGuard: true });
-          }
         } catch (error) {
-          if (error.status === 409 || error.data?.code === 'SET_CONFLICT') {
+          if (error.status === 404) {
+            setSets(currentSets => {
+              storageService.cacheAccountSets(user.id, currentSets);
+              return currentSets;
+            });
+            showToast('Bộ từ đã được xóa trước đó.', 'info');
+            return;
+          }
+          if (error.data?.code === 'SET_CONFLICT') {
             try {
               await refreshAccountSets();
             } catch (refreshError) {
               console.warn('Unable to refresh sets after a delete conflict:', refreshError);
             }
-            setConfirmModal(current => ({ ...current, isOpen: false }));
             showToast('Bộ từ này vừa được thay đổi ở một phiên khác nên chưa bị xóa. Danh sách đã được làm mới; hãy kiểm tra rồi thử lại.', 'warning', 8000);
             return;
+          }
+          if (targetSet && String(activeUserIdRef.current) === String(user.id)) {
+            setSets(currentSets => {
+              if (currentSets.some(set => String(set.id) === String(setId))) return currentSets;
+              const nextSets = [...currentSets];
+              nextSets.splice(Math.max(0, targetIndex), 0, targetSet);
+              storageService.cacheAccountSets(user.id, nextSets);
+              return nextSets;
+            });
           }
           showToast(error.message || 'Lỗi khi xóa bộ từ vựng.', 'warning');
         }
@@ -446,37 +565,61 @@ export const AppProvider = ({ children }) => {
     });
   }, [activeView, currentSetId, navigateTo, refreshAccountSets, requireAuth, sets, showToast, user]);
 
-  const recordWordResult = useCallback(async (setId, cardId, isCorrect) => {
+  const recordWordResult = useCallback((setId, cardId, isCorrect) => {
     if (!requireAuth('Vui lòng đăng nhập trước khi học.')) throw new Error('Bạn chưa đăng nhập.');
     if (typeof isCorrect !== 'boolean') throw new Error('Kết quả học không hợp lệ.');
     const studyDate = storageService.getLocalDateString();
-    const result = await apiService.recordWordStats(setId, cardId, isCorrect, studyDate);
-    const nextStreak = normalizeStreak(result?.streak || streak);
-    setStreak(nextStreak);
-    storageService.cacheSession(user, nextStreak);
-    setSets(currentSets => {
-      const nextSets = currentSets.map(set => {
-        if (String(set.id) !== String(setId)) return set;
-        return {
-          ...set,
-          cards: (set.cards || []).map(card => {
-            if (String(card.id) !== String(cardId)) return card;
-            const stats = card.stats || { correct: 0, wrong: 0 };
+    const userId = user.id;
+    const progressRevision = progressRevisionRef.current;
+
+    const queuedWrite = studyWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (String(activeUserIdRef.current) !== String(userId)) return { skipped: true };
+        let result;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            result = await apiService.recordWordStats(setId, cardId, isCorrect, studyDate);
+            break;
+          } catch (error) {
+            const isBusy = error.data?.code === 'MUTATION_BUSY' && attempt < 2;
+            if (!isBusy) throw error;
+            await new Promise(resolve => setTimeout(resolve, 180 * (attempt + 1)));
+          }
+        }
+
+        if (String(activeUserIdRef.current) !== String(userId)) return result;
+        const nextStreak = normalizeStreak(result?.streak);
+        setStreak(nextStreak);
+        storageService.cacheSession(user, nextStreak);
+        if (progressRevision !== progressRevisionRef.current) return result;
+        setSets(currentSets => {
+          const nextSets = currentSets.map(set => {
+            if (String(set.id) !== String(setId)) return set;
             return {
-              ...card,
-              stats: {
-                correct: (Number.parseInt(stats.correct, 10) || 0) + (isCorrect ? 1 : 0),
-                wrong: (Number.parseInt(stats.wrong, 10) || 0) + (isCorrect ? 0 : 1)
-              }
+              ...set,
+              cards: (set.cards || []).map(card => {
+                if (String(card.id) !== String(cardId)) return card;
+                const stats = card.stats || { correct: 0, wrong: 0 };
+                return {
+                  ...card,
+                  stats: {
+                    correct: Math.min(2147483647, (Number.parseInt(stats.correct, 10) || 0) + (isCorrect ? 1 : 0)),
+                    wrong: Math.min(2147483647, (Number.parseInt(stats.wrong, 10) || 0) + (isCorrect ? 0 : 1))
+                  }
+                };
+              })
             };
-          })
-        };
+          });
+          storageService.cacheAccountSets(userId, nextSets);
+          return nextSets;
+        });
+        return result;
       });
-      storageService.cacheAccountSets(user.id, nextSets);
-      return nextSets;
-    });
-    return result;
-  }, [requireAuth, streak, user]);
+
+    studyWriteQueueRef.current = queuedWrite;
+    return queuedWrite;
+  }, [requireAuth, user]);
 
   const requestResetProgress = useCallback((setId = 'all', setTitle = '') => {
     if (!requireAuth('Vui lòng đăng nhập trước khi đặt lại tiến trình.')) return;
@@ -490,8 +633,25 @@ export const AppProvider = ({ children }) => {
       confirmText: 'Đặt lại',
       danger: true,
       onConfirm: async () => {
+        const previousSets = sets;
+        progressRevisionRef.current += 1;
+        setConfirmModal(current => ({ ...current, isOpen: false }));
+        setSets(currentSets => {
+          const nextSets = currentSets.map(set => (
+            setId === 'all' || String(set.id) === String(setId)
+              ? { ...set, cards: (set.cards || []).map(card => ({ ...card, stats: { correct: 0, wrong: 0 } })) }
+              : set
+          ));
+          return nextSets;
+        });
+        showToast('Đã đặt lại trên giao diện. Đang đồng bộ với tài khoản...', 'info', 2500);
+
+        const resetWrite = studyWriteQueueRef.current
+          .catch(() => undefined)
+          .then(() => retryBusyMutation(() => apiService.resetProgress(setId)));
+        studyWriteQueueRef.current = resetWrite;
         try {
-          await apiService.resetProgress(setId);
+          await resetWrite;
           setSets(currentSets => {
             const nextSets = currentSets.map(set => (
               setId === 'all' || String(set.id) === String(setId)
@@ -501,14 +661,22 @@ export const AppProvider = ({ children }) => {
             storageService.cacheAccountSets(user.id, nextSets);
             return nextSets;
           });
-          setConfirmModal(current => ({ ...current, isOpen: false }));
           showToast('Đã đặt lại tiến trình học.', 'info');
         } catch (error) {
+          try {
+            await refreshAccountSets();
+          } catch (refreshError) {
+            console.warn('Unable to refresh sets after reset failure:', refreshError);
+            if (String(activeUserIdRef.current) === String(user.id)) {
+              setSets(previousSets);
+              storageService.cacheAccountSets(user.id, previousSets);
+            }
+          }
           showToast(error.message || 'Lỗi khi đặt lại tiến trình.', 'warning');
         }
       }
     });
-  }, [requireAuth, showToast, user]);
+  }, [refreshAccountSets, requireAuth, sets, showToast, user]);
 
   const handleImportSuccess = useCallback(async importedSets => {
     if (!requireAuth('Vui lòng đăng nhập trước khi nhập dữ liệu.')) throw new Error('Bạn chưa đăng nhập.');

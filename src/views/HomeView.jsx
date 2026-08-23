@@ -11,7 +11,8 @@ import {
   Sparkles,
   Layers,
   Clock,
-  ChevronDown
+  ChevronDown,
+  Loader2
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
@@ -132,9 +133,10 @@ export const HomeView = () => {
               const totalWrong = cardsArr.reduce((acc, c) => acc + (c?.stats?.wrong || 0), 0);
               const totalAttempts = totalCorrect + totalWrong;
               const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
+              const isSyncing = set._syncing === true;
 
               return (
-                <div key={set.id} className="set-list-item">
+                <div key={set.id} className={`set-list-item ${isSyncing ? 'is-syncing' : ''}`} aria-busy={isSyncing}>
                   <div className="set-item-main">
                     {/* Top Meta Line */}
                     <div className="set-item-top-row">
@@ -143,6 +145,11 @@ export const HomeView = () => {
                           <Layers size={14} />
                           {studiedWords}/{totalWords} đã học
                         </span>
+                        {isSyncing && (
+                          <span className="syncing-set-badge" role="status">
+                            <Loader2 size={13} className="spinner" aria-hidden="true" /> Đang lưu
+                          </span>
+                        )}
                         {totalAttempts > 0 && (
                           <span className={`accuracy-badge ${accuracy >= 80 ? 'high' : accuracy >= 50 ? 'medium' : 'low'}`}>
                             Chính xác {accuracy}%
@@ -160,7 +167,8 @@ export const HomeView = () => {
                           type="button"
                           className="action-icon-btn edit" 
                           onClick={() => navigateTo('edit', set.id)}
-                          title="Chỉnh sửa bộ từ"
+                          disabled={isSyncing}
+                          title={isSyncing ? 'Đang lưu bộ từ' : 'Chỉnh sửa bộ từ'}
                           aria-label={`Chỉnh sửa bộ từ ${set.title}`}
                         >
                           <Edit3 size={18} />
@@ -169,7 +177,8 @@ export const HomeView = () => {
                           type="button"
                           className="action-icon-btn delete" 
                           onClick={() => requestDeleteSet(set.id, set.title)}
-                          title="Xóa bộ từ"
+                          disabled={isSyncing}
+                          title={isSyncing ? 'Đang lưu bộ từ' : 'Xóa bộ từ'}
                           aria-label={`Xóa bộ từ ${set.title}`}
                         >
                           <Trash2 size={18} />
@@ -184,6 +193,7 @@ export const HomeView = () => {
                           type="button"
                           className="set-title-button"
                           onClick={() => navigateTo('flashcards', set.id)}
+                          disabled={isSyncing}
                           aria-label={`Mở Flashcards của bộ ${set.title || 'không tên'}`}
                         >
                           {set.title}
@@ -201,6 +211,7 @@ export const HomeView = () => {
                       type="button"
                       className="mode-btn flashcards"
                       onClick={() => navigateTo('flashcards', set.id)}
+                      disabled={isSyncing}
                       title="Thẻ ghi nhớ"
                       aria-label="Thẻ ghi nhớ Flashcards"
                     >
@@ -212,6 +223,7 @@ export const HomeView = () => {
                       type="button"
                       className="mode-btn learn"
                       onClick={() => navigateTo('learn', set.id)}
+                      disabled={isSyncing}
                       title="Trắc nghiệm 4 đáp án"
                       aria-label="Học trắc nghiệm 4 đáp án"
                     >
@@ -223,6 +235,7 @@ export const HomeView = () => {
                       type="button"
                       className="mode-btn typing"
                       onClick={() => navigateTo('typing', set.id)}
+                      disabled={isSyncing}
                       title="Luyện gõ từ tiếng Anh"
                       aria-label="Luyện gõ từ tiếng Anh"
                     >
@@ -234,6 +247,7 @@ export const HomeView = () => {
                       type="button"
                       className="mode-btn progress"
                       onClick={() => navigateTo('progress', set.id)}
+                      disabled={isSyncing}
                       title="Xem tiến trình chi tiết"
                       aria-label="Xem thống kê tiến trình"
                     >
