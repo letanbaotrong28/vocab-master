@@ -181,7 +181,7 @@ export const TypingView = () => {
 
   const currentItem = cards[currentIndex];
 
-  const handleCheckAnswer = (e) => {
+  const handleCheckAnswer = async (e) => {
     if (e) e.preventDefault();
     if (isComposing || isAnswered || submittingRef.current || !currentItem) return;
 
@@ -199,6 +199,15 @@ export const TypingView = () => {
 
     submittingRef.current = true;
     setIsSubmitting(true);
+    try {
+      await recordWordResult(currentSet.id, currentItem.card.id, correct);
+    } catch (error) {
+      showToast(error.message || 'Không thể lưu kết quả. Vui lòng thử lại.', 'warning');
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      return;
+    }
+
     setIsCorrect(correct);
     setIsAnswered(true);
 
@@ -217,25 +226,23 @@ export const TypingView = () => {
       ]
     }));
 
-    try {
-      Promise.resolve(recordWordResult(currentSet.id, currentItem.card.id, correct)).catch((error) => {
-        showToast(error.message || 'Không thể lưu kết quả. Kết nối mạng có thể đang gián đoạn.', 'warning', 6000);
-      });
-    } catch (error) {
-      showToast(error.message || 'Không thể lưu kết quả.', 'warning');
-    }
-
-    queueMicrotask(() => {
-      submittingRef.current = false;
-      setIsSubmitting(false);
-    });
+    submittingRef.current = false;
+    setIsSubmitting(false);
   };
 
   // Item 63 Fix: Skip / Don't know button
-  const handleSkipQuestion = () => {
+  const handleSkipQuestion = async () => {
     if (isAnswered || submittingRef.current || !currentItem) return;
     submittingRef.current = true;
     setIsSubmitting(true);
+    try {
+      await recordWordResult(currentSet.id, currentItem.card.id, false);
+    } catch (error) {
+      showToast(error.message || 'Không thể lưu kết quả. Vui lòng thử lại.', 'warning');
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      return;
+    }
     setInputWord('');
     setIsCorrect(false);
     setIsAnswered(true);
@@ -255,18 +262,8 @@ export const TypingView = () => {
       ]
     }));
 
-    try {
-      Promise.resolve(recordWordResult(currentSet.id, currentItem.card.id, false)).catch((error) => {
-        showToast(error.message || 'Không thể lưu kết quả. Kết nối mạng có thể đang gián đoạn.', 'warning', 6000);
-      });
-    } catch (error) {
-      showToast(error.message || 'Không thể lưu kết quả.', 'warning');
-    }
-
-    queueMicrotask(() => {
-      submittingRef.current = false;
-      setIsSubmitting(false);
-    });
+    submittingRef.current = false;
+    setIsSubmitting(false);
   };
 
   const handleNext = () => {
