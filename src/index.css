@@ -3507,16 +3507,17 @@ code {
   flex-direction: column;
 }
 
-.main-body { flex: 1; }
+.main-body {
+  flex: 1;
+  background: var(--bg-app);
+}
+
+.main-body:focus,
+.main-body:focus-visible {
+  outline: none;
+}
 
 .auth-splash-screen { background: var(--bg-app); }
-
-.view-loading-shell {
-  min-height: 18rem;
-  padding: 4rem 1rem;
-  color: var(--text-main);
-  background: transparent;
-}
 
 .app-logo-badge {
   width: 72px;
