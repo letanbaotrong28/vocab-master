@@ -5,19 +5,6 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234255ff'><path d='M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z'/></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="VocabMaster - Ứng dụng học từ vựng tiếng Anh với Flashcards, Trắc nghiệm, Luyện gõ từ và Theo dõi tiến trình." />
-    <script>
-      // Apply the saved theme before the first paint so reloads never flash
-      // the light boot screen while React is still starting.
-      (() => {
-        try {
-          const savedTheme = localStorage.getItem('vocabmaster_theme_v2')
-            ?? localStorage.getItem('quizlet_vocab_theme_v1');
-          document.documentElement.dataset.theme = savedTheme === 'dark' ? 'dark' : 'light';
-        } catch {
-          document.documentElement.dataset.theme = 'light';
-        }
-      })();
-    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -35,26 +22,6 @@
         background: #f8fafc;
         font-family: "Plus Jakarta Sans", system-ui, sans-serif;
         text-align: center;
-      }
-
-      html[data-theme="dark"],
-      html[data-theme="dark"] body,
-      html[data-theme="dark"] #root,
-      html[data-theme="dark"] #app-boot-fallback {
-        color-scheme: dark;
-        color: #ffffff;
-        background: #0b0f19;
-      }
-
-      html[data-theme="light"] {
-        color-scheme: light;
-      }
-
-      html,
-      body,
-      #root {
-        min-height: 100%;
-        margin: 0;
       }
 
       #app-boot-fallback .boot-spinner {
